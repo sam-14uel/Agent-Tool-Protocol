@@ -1,0 +1,20 @@
+[project]
+name = "atp-sdk"
+version = "0.1.0"
+description = "Official SDK to register ToolKits to ChatATP"
+readme = "README.md"
+authors = [
+  { name = "Samuel Obinna Chimdi", email = "sammyfirst6@gmail.com" }
+]
+license = {text = "MIT"}
+dependencies = []
+requires-python = ">=3.7"
+keywords = ["agent", "toolkit", "chat", "sdk", "llm"]
+
+[project.urls]
+"Homepage" = "https://github.com/samuelobinachi/atp-sdk"
+"Repository" = "https://github.com/samuelobinachi/atp-sdk"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
