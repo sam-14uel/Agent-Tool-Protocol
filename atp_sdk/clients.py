@@ -194,6 +194,8 @@ class ToolKitClient:
             logger.exception(f"Error handling WebSocket message: {e}")
 
     def start(self):
+        self.running = True
+
         def run_ws():
             url = f"ws://127.0.0.1:8000/ws/v1/atp/{self.api_key}/"
             while True:
@@ -230,7 +232,7 @@ class ToolKitClient:
     def run_forever(self):
         """Keep the main thread alive\n\nLet it run until user stops it"""
         try:
-            while self._running:
+            while self.running:
                 time.sleep(1)
         except KeyboardInterrupt:
             self.stop()
