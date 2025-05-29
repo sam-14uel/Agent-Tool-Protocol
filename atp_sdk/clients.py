@@ -194,7 +194,7 @@ class ToolKitClient:
             logger.exception(f"Error handling WebSocket message: {e}")
 
     def start(self):
-        self.running = True
+        # self.running = True
 
         def run_ws():
             url = f"ws://127.0.0.1:8000/ws/v1/atp/{self.api_key}/"
