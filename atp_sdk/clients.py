@@ -18,9 +18,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ToolKitClient:
-    def __init__(self, api_key, app_name):
+    def __init__(self, api_key, app_name, base_url=""):
         self.api_key = api_key
         self.app_name = app_name
+        self.base_url = base_url
         self.registered_tools = {}
         self.exchange_tokens = {}
         self.lock = threading.Lock()
@@ -35,12 +36,12 @@ class ToolKitClient:
     def register_tool(self, function_name, params, required_params, description, auth_provider, auth_type, auth_with):
         def decorator(func):
             # Ensure 'access_token' is NOT in user function signature
-            sig = inspect.signature(func)
-            if "access_token" in sig.parameters:
-                raise ValueError(
-                    f"In tool '{function_name}': 'access_token' must not be declared in your function signature.\n"
-                    "ChatATP handles this securely and automatically."
-                )
+            #sig = inspect.signature(func)
+            # if "access_token" in sig.parameters:
+            #     raise ValueError(
+            #         f"In tool '{function_name}': 'access_token' must not be declared in your function signature.\n"
+            #         "ChatATP handles this securely and automatically."
+            #     )
 
             # Get source code and hash it
             source_code = inspect.getsource(func)
@@ -162,21 +163,33 @@ class ToolKitClient:
                     request_id = payload["request_id"]
                     tool_name = payload["tool_name"]
                     params = payload["params"]
-                    access_token = payload.get("access_token")  # optional, if needed
-                    api_key = payload.get("api_key")  # optional, if needed
+                    #access_token = payload.get("access_token")  # optional, if needed
+                    #api_key = payload.get("api_key")  # optional, if needed
+                    auth_token = payload.get("auth_token")  # optional, if needed
 
                     if tool_name in self.registered_tools:
                         func = self.registered_tools[tool_name]["function"]
                         try:
-                            # Call function without access_token if not in signature
-                            result = func(**params)
-                            # Send response
-                            ws.send(json.dumps({
-                                "type": "tool_response",
-                                "request_id": request_id,
-                                "result": result
-                            }))
-                            self._report_execution(tool_name, result)
+                            if auth_token:
+                                # Call function with auth_token if not in signature
+                                result = func(auth_token, **params)
+                                # Send response
+                                ws.send(json.dumps({
+                                    "type": "tool_response",
+                                    "request_id": request_id,
+                                    "result": result
+                                }))
+                                self._report_execution(tool_name, result)
+                            else:
+                                # Call function without auth_token if not in signature
+                                result = func(**params)
+                                # Send response
+                                ws.send(json.dumps({
+                                    "type": "tool_response",
+                                    "request_id": request_id,
+                                    "result": result
+                                }))
+                                self._report_execution(tool_name, result)
                         except Exception as e:
                             error_result = {"error": str(e)}
                             ws.send(json.dumps({
@@ -224,18 +237,18 @@ class ToolKitClient:
         thread.daemon = True
         thread.start()
 
-        # self.run_forever()
+        self.run_forever()
 
         logger.info("WebSocket thread started.")
 
 
-    # def run_forever(self):
-    #     """Keep the main thread alive\n\nLet it run until user stops it"""
-    #     try:
-    #         while self.running:
-    #             time.sleep(1)
-    #     except KeyboardInterrupt:
-    #         self.stop()
+    def run_forever(self):
+        """Keep the main thread alive\n\nLet it run until user stops it"""
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            self.stop()
 
 
     def stop(self):
