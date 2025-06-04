@@ -224,18 +224,18 @@ class ToolKitClient:
         thread.daemon = True
         thread.start()
 
-        self.run_forever()
+        # self.run_forever()
 
         logger.info("WebSocket thread started.")
 
 
-    def run_forever(self):
-        """Keep the main thread alive\n\nLet it run until user stops it"""
-        try:
-            while self.running:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            self.stop()
+    # def run_forever(self):
+    #     """Keep the main thread alive\n\nLet it run until user stops it"""
+    #     try:
+    #         while self.running:
+    #             time.sleep(1)
+    #     except KeyboardInterrupt:
+    #         self.stop()
 
 
     def stop(self):
