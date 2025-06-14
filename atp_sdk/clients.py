@@ -74,6 +74,9 @@ class ToolKitClient:
 
         # Generate a sample response for registration
         sample_params = self._generate_sample_params(tool_data["params"])
+        sig = inspect.signature(func)
+        if "auth_token" in sig.parameters:
+            sample_params["auth_token"] = "sample_token"
         try:
             response = func(**sample_params)
         except Exception as e:
@@ -164,17 +167,22 @@ class ToolKitClient:
                     payload = data["payload"]
                     request_id = payload["request_id"]
                     tool_name = payload["tool_name"]
-                    params = payload["params"]
-                    #access_token = payload.get("access_token")  # optional, if needed
-                    #api_key = payload.get("api_key")  # optional, if needed
+                    params = payload.get("params", {})
                     auth_token = payload.get("auth_token")  # optional, if needed
 
                     if tool_name in self.registered_tools:
                         func = self.registered_tools[tool_name]["function"]
+                        sig = inspect.signature(func)
                         try:
                             if auth_token:
+                                # Prepare arguments based on function signature
+                                call_params = params.copy()
+                                if "auth_token" in sig.parameters and auth_token:
+                                    call_params["auth_token"] = auth_token
+                                elif "auth_token" in sig.parameters and not auth_token:
+                                    raise ValueError(f"Function '{tool_name}' requires auth_token, but none was provided.")
                                 # Call function with auth_token if not in signature
-                                result = func(auth_token, **params)
+                                result = func(**call_params)
                                 # Send response
                                 ws.send(json.dumps({
                                     "type": "tool_response",
