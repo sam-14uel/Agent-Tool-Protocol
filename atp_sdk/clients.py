@@ -18,10 +18,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ToolKitClient:
-    def __init__(self, api_key, app_name, base_url=""):
+    def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com"):
         self.api_key = api_key
         self.app_name = app_name
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
         self.registered_tools = {}
         self.exchange_tokens = {}
         self.lock = threading.Lock()
@@ -98,7 +98,7 @@ class ToolKitClient:
             }
         }
 
-        url = "http://127.0.0.1:8000/api/v1/register_tool"
+        url = f"{self.base_url}/api/v1/register_tool"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
@@ -117,6 +117,8 @@ class ToolKitClient:
     def _generate_sample_params(self, param_defs):
         # Generate dummy sample parameters based on param definitions
         sample = {}
+        # Always add a dummy auth_token for sample invocation
+        sample["auth_token"] = "sample_token"
         for key in param_defs:
             # Use dummy values for now, you can refine per type
             sample[key] = "sample_value"
@@ -136,7 +138,7 @@ class ToolKitClient:
             "function_id": function_id
         }
 
-        url = "http://127.0.0.1:8000/api/v1/execute_function"
+        url = f"{self.base_url}/api/v1/execute_function"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
@@ -179,7 +181,7 @@ class ToolKitClient:
                                     "request_id": request_id,
                                     "result": result
                                 }))
-                                self._report_execution(tool_name, result)
+                                # self._report_execution(tool_name, result)
                             else:
                                 # Call function without auth_token if not in signature
                                 result = func(**params)
@@ -189,7 +191,7 @@ class ToolKitClient:
                                     "request_id": request_id,
                                     "result": result
                                 }))
-                                self._report_execution(tool_name, result)
+                                # self._report_execution(tool_name, result)
                         except Exception as e:
                             error_result = {"error": str(e)}
                             ws.send(json.dumps({
@@ -197,7 +199,7 @@ class ToolKitClient:
                                 "request_id": request_id,
                                 "result": error_result
                             }))
-                            self._report_execution(tool_name, error_result)
+                            # self._report_execution(tool_name, error_result)
                     else:
                         logger.warning(f"Unknown tool requested: {tool_name}")
 
@@ -210,7 +212,11 @@ class ToolKitClient:
         # self.running = True
 
         def run_ws():
-            url = f"ws://127.0.0.1:8000/ws/v1/atp/{self.api_key}/"
+            if self.base_url.startswith("https://"):
+                ws_url = self.base_url.replace("https://", "wss://")
+            elif self.base_url.startswith("http://"):
+                ws_url = self.base_url.replace("http://", "ws://")
+            url = f"{ws_url}/ws/v1/atp/{self.api_key}/"
             while True:
                 try:
                     logger.info(f"Connecting to: {url}")
