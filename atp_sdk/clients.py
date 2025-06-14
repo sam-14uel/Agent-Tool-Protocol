@@ -144,7 +144,7 @@ class ToolKitClient:
         url = f"{self.base_url}/api/v1/execute_function"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            # "Authorization": f"Bearer {self.api_key}"
         }
 
         try:
@@ -180,7 +180,12 @@ class ToolKitClient:
                                 if "auth_token" in sig.parameters and auth_token:
                                     call_params["auth_token"] = auth_token
                                 elif "auth_token" in sig.parameters and not auth_token:
-                                    raise ValueError(f"Function '{tool_name}' requires auth_token, but none was provided.")
+                                    error_result = {"error": f"Function '{tool_name}' requires 'auth_token', but none was provided."}
+                                    ws.send(json.dumps({
+                                        "type": "tool_response",
+                                        "request_id": request_id,
+                                        "result": error_result
+                                    }))
                                 # Call function with auth_token if not in signature
                                 result = func(**call_params)
                                 # Send response
