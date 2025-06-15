@@ -159,65 +159,64 @@ class ToolKitClient:
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            if data.get("type") == "tool_request":
-                message_type = data["message_type"]
-                if message_type == "atp_client_connected":
-                    logger.info(f"Server message: {data['payload']['message']}")
-                elif message_type == "atp_tool_request":
-                    payload = data["payload"]
-                    request_id = payload["request_id"]
-                    tool_name = payload["tool_name"]
-                    params = payload.get("params", {})
-                    auth_token = payload.get("auth_token")  # optional, if needed
+            message_type = data["message_type"]
+            if message_type == "atp_client_connected":
+                logger.info(f"Server message: {data['payload']['message']}")
+            elif message_type == "atp_tool_request":
+                payload = data["payload"]
+                request_id = payload["request_id"]
+                tool_name = payload["tool_name"]
+                params = payload.get("params", {})
+                auth_token = payload.get("auth_token")  # optional, if needed
 
-                    if tool_name in self.registered_tools:
-                        func = self.registered_tools[tool_name]["function"]
-                        sig = inspect.signature(func)
-                        try:
-                            if auth_token:
-                                # Prepare arguments based on function signature
-                                call_params = params.copy()
-                                if "auth_token" in sig.parameters and auth_token:
-                                    call_params["auth_token"] = auth_token
-                                elif "auth_token" in sig.parameters and not auth_token:
-                                    error_result = {"error": f"Function '{tool_name}' requires 'auth_token', but none was provided."}
-                                    ws.send(json.dumps({
-                                        "type": "tool_response",
-                                        "request_id": request_id,
-                                        "result": error_result
-                                    }))
-                                # Call function with auth_token if not in signature
-                                result = func(**call_params)
-                                # Send response
+                if tool_name in self.registered_tools:
+                    func = self.registered_tools[tool_name]["function"]
+                    sig = inspect.signature(func)
+                    try:
+                        if auth_token:
+                            # Prepare arguments based on function signature
+                            call_params = params.copy()
+                            if "auth_token" in sig.parameters and auth_token:
+                                call_params["auth_token"] = auth_token
+                            elif "auth_token" in sig.parameters and not auth_token:
+                                error_result = {"error": f"Function '{tool_name}' requires 'auth_token', but none was provided."}
                                 ws.send(json.dumps({
                                     "type": "tool_response",
                                     "request_id": request_id,
-                                    "result": result
+                                    "result": error_result
                                 }))
-                                # self._report_execution(tool_name, result)
-                            else:
-                                # Call function without auth_token if not in signature
-                                result = func(**params)
-                                # Send response
-                                ws.send(json.dumps({
-                                    "type": "tool_response",
-                                    "request_id": request_id,
-                                    "result": result
-                                }))
-                                # self._report_execution(tool_name, result)
-                        except Exception as e:
-                            error_result = {"error": str(e)}
+                            # Call function with auth_token if not in signature
+                            result = func(**call_params)
+                            # Send response
                             ws.send(json.dumps({
                                 "type": "tool_response",
                                 "request_id": request_id,
-                                "result": error_result
+                                "result": result
                             }))
-                            # self._report_execution(tool_name, error_result)
-                    else:
-                        logger.warning(f"Unknown tool requested: {tool_name}")
-
+                            # self._report_execution(tool_name, result)
+                        else:
+                            # Call function without auth_token if not in signature
+                            result = func(**params)
+                            # Send response
+                            ws.send(json.dumps({
+                                "type": "tool_response",
+                                "request_id": request_id,
+                                "result": result
+                            }))
+                            # self._report_execution(tool_name, result)
+                    except Exception as e:
+                        error_result = {"error": str(e)}
+                        ws.send(json.dumps({
+                            "type": "tool_response",
+                            "request_id": request_id,
+                            "result": error_result
+                        }))
+                        # self._report_execution(tool_name, error_result)
                 else:
-                    logger.warning(f"Unknown message type: {message_type}")
+                    logger.warning(f"Unknown tool requested: {tool_name}")
+
+            else:
+                logger.warning(f"Unknown message type: {message_type}")
         except Exception as e:
             logger.exception(f"Error handling WebSocket message: {e}")
 
