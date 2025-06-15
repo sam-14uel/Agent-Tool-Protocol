@@ -104,7 +104,7 @@ class ToolKitClient:
         url = f"{self.base_url}/api/v1/register_tool"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            # "Authorization": f"Bearer {self.api_key}"
         }
 
         resp = requests.post(url, json=payload, headers=headers)
@@ -222,7 +222,7 @@ class ToolKitClient:
             logger.exception(f"Error handling WebSocket message: {e}")
 
     def start(self):
-        # self.running = True
+        self.running = True
 
         def run_ws():
             if self.base_url.startswith("https://"):
