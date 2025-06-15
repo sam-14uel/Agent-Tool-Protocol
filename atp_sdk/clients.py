@@ -11,7 +11,7 @@ import logging
 import time
 import asyncio
 
-# websocket.enableTrace(True)
+websocket.enableTrace(True)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -164,13 +164,15 @@ class ToolKitClient:
                 logger.info(f"Server message: {data['payload']['message']}")
             elif message_type == "atp_tool_request":
                 payload = data["payload"]
-                request_id = payload["request_id"]
-                tool_name = payload["tool_name"]
+                request_id = payload.get("request_id")
+                tool_name = payload.get("tool_name")
                 params = payload.get("params", {})
                 auth_token = payload.get("auth_token")  # optional, if needed
+                logger.info(f"Received tool request for '{tool_name}' with params: {params}")
 
                 if tool_name in self.registered_tools:
-                    func = self.registered_tools[tool_name]["function"]
+                    tool_data = self.registered_tools[tool_name]
+                    func = tool_data["function"]
                     sig = inspect.signature(func)
                     try:
                         if auth_token:
@@ -213,12 +215,12 @@ class ToolKitClient:
                         }))
                         # self._report_execution(tool_name, error_result)
                 else:
-                    logger.warning(f"Unknown tool requested: {tool_name}")
+                    logger.info(f"Unknown tool requested: {tool_name}")
 
             else:
-                logger.warning(f"Unknown message type: {message_type}")
+                logger.info(f"Unknown message type: {message_type}")
         except Exception as e:
-            logger.exception(f"Error handling WebSocket message: {e}")
+            logger.info(f"Error handling WebSocket message: {e}")
 
     def start(self):
         self.running = True
