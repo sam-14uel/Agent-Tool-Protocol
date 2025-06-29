@@ -1,5 +1,5 @@
 [project]
-name = "atp-sdk"
+name = "AgentToolProtocol"
 version = "0.1.0"
 description = "Official SDK to register ToolKits to ChatATP"
 readme = "README.md"
