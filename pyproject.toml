@@ -1,15 +1,18 @@
 [project]
 name = "AgentToolProtocol"
-version = "0.1.0"
+version = "0.1.1"
 description = "Official SDK to register ToolKits to ChatATP"
 readme = "README.md"
 authors = [
   { name = "Samuel Obinna Chimdi", email = "sammyfirst6@gmail.com" }
 ]
 license = {text = "MIT"}
-dependencies = []
+dependencies = [
+  "requests",
+  "websocket-client"
+]
 requires-python = ">=3.7"
-keywords = ["agent", "toolkit", "chat", "sdk", "llm"]
+keywords = ["agent", "toolkit", "chat", "sdk", "llm", "ChatATP", "ChatGPT", "AI Agent Frameworks"]
 
 [project.urls]
 "Homepage" = "https://github.com/sam-14uel/Agent-Tool-Protocol"

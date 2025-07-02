@@ -72,7 +72,7 @@ ToolKitClient(
 **Parameters:**
 - `api_key` (str): Your ATP API key.
 - `app_name` (str): Name of your application.
-- `base_url` (str, optional): ATP backend URL. Defaults to production.
+- `base_url` (str, optional): ATP Server backend URL. Defaults to chatatp-backend.onrender.com.
 
 ---
 

@@ -18,7 +18,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ToolKitClient:
+    """
+    ToolKitClient manages registration and execution of remote tools via WebSocket for the ATP Toolkit platform.
+
+    Attributes:
+        api_key (str): Your ATP Toolkit API key.
+        app_name (str): Name of your application.
+        base_url (str): Backend server URL.
+        registered_tools (dict): Registered tool metadata.
+    """
     def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com"):
+        """
+        Initialize the ToolKitClient.
+
+        Args:
+            api_key (str): Your ATP Toolkit API key.
+            app_name (str): Name of your application.
+            base_url (str, optional): Backend server URL of the ATP Server. Defaults to chatatp-backend.onrender.com.
+        """
         self.api_key = api_key
         self.app_name = app_name
         self.base_url = base_url.rstrip("/")
@@ -34,6 +51,21 @@ class ToolKitClient:
         self.running = False
 
     def register_tool(self, function_name, params, required_params, description, auth_provider, auth_type, auth_with):
+        """
+        Register a Python function as a remote tool.
+
+        Args:
+            function_name (str): Unique name for the tool based on the function.
+            params (list): List of parameter names.
+            required_params (list): List of required parameter names.
+            description (str): Description of the tool.
+            auth_provider (str): Name of the auth provider.
+            auth_type (str): Type of authentication.
+            auth_with (str): How authentication is performed.
+
+        Returns:
+            decorator: A decorator to wrap the tool function.
+        """
         def decorator(func):
             # Ensure 'access_token' is NOT in user function signature
             #sig = inspect.signature(func)
@@ -67,6 +99,12 @@ class ToolKitClient:
         return decorator
 
     def _register_with_server(self, function_name):
+        """
+        Register the tool with the backend server.
+
+        Args:
+            function_name (str): Name of the tool to register.
+        """
         tool_data = self.registered_tools[function_name]
         func = tool_data["function"]
         source_code = tool_data["source_code"]
@@ -118,6 +156,15 @@ class ToolKitClient:
             logger.info(f"⚠️ Failed to register tool '{function_name}' ❌: {resp.status_code} - {resp.text}")
 
     def _generate_sample_params(self, param_defs):
+        """
+        Generate sample parameters for tool registration.
+
+        Args:
+            param_defs (list): List of parameter names.
+
+        Returns:
+            dict: Dictionary of sample parameters.
+        """
         # Generate dummy sample parameters based on param definitions
         sample = {}
         # Always add a dummy auth_token for sample invocation
@@ -128,6 +175,13 @@ class ToolKitClient:
         return sample
 
     def _report_execution(self, function_id, result):
+        """
+        Report the result of a tool execution to the backend.
+
+        Args:
+            function_id (str): Name of the executed tool.
+            result (dict): Result of the execution.
+        """
         with self.lock:
             exchange_token = self.exchange_tokens.pop(function_id, None)
 
@@ -157,6 +211,13 @@ class ToolKitClient:
             logger.exception(f"Error reporting execution for '{function_id}': {e}")
 
     def on_message(self, ws, message):
+        """
+        Handle incoming WebSocket messages.
+
+        Args:
+            ws: WebSocket connection.
+            message (str): Incoming message as JSON string.
+        """
         try:
             data = json.loads(message)
             message_type = data["message_type"]
@@ -179,6 +240,8 @@ class ToolKitClient:
                             # Prepare arguments based on function signature
                             call_params = params.copy()
                             if "auth_token" in sig.parameters and auth_token:
+                                call_params["auth_token"] = auth_token
+                            elif any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()) and auth_token:
                                 call_params["auth_token"] = auth_token
                             elif "auth_token" in sig.parameters and not auth_token:
                                 error_result = {"error": f"Function '{tool_name}' requires 'auth_token', but none was provided."}
@@ -223,6 +286,9 @@ class ToolKitClient:
             logger.info(f"Error handling WebSocket message: {e}")
 
     def start(self):
+        """
+        Start the WebSocket client and listen for tool requests.
+        """
         self.running = True
 
         def run_ws():
@@ -263,7 +329,9 @@ class ToolKitClient:
 
 
     def run_forever(self):
-        """Keep the main thread alive\n\nLet it run until user stops it"""
+        """
+        Keep the main thread alive until stopped.
+        """
         try:
             while self.running:
                 time.sleep(1)
@@ -272,6 +340,9 @@ class ToolKitClient:
 
 
     def stop(self):
+        """
+        Stop the WebSocket client and close the connection.
+        """
         if self.ws:
             self.ws.close()
         if self.ws_thread:
