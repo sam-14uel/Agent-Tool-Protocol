@@ -10,7 +10,7 @@ import json
 import logging
 import time
 # import asyncio
-
+from websocket import WebSocketException, WebSocketConnectionClosedException
 # websocket.enableTrace(True)
 
 # Configure logging
@@ -296,7 +296,7 @@ class ToolKitClient:
                 ws_url = self.base_url.replace("https://", "wss://")
             elif self.base_url.startswith("http://"):
                 ws_url = self.base_url.replace("http://", "ws://")
-            url = f"{ws_url}/ws/v1/atp/{self.api_key}/"
+            url = f"{ws_url}/ws/v1/atp/toolkit-client/{self.api_key}/"
             while True:
                 try:
                     logger.info(f"Connecting to: {url}")
@@ -355,3 +355,230 @@ def on_error(ws, error):
 
 def on_close(ws, code, reason):
     logger.error(f"WebSocket closed with code {code} and reason: {reason}")
+
+
+
+class LLMClient:
+    """
+    LLMClient manages WebSocket connections to the ChatATP Agent Server for toolkit context retrieval
+    and tool execution.
+
+    Attributes:
+        api_key (str): ChatATP LLM Client API key for authentication.
+        base_url (str): WebSocket server URL.
+        ws (websocket.WebSocketApp): WebSocket connection instance.
+        lock (threading.Lock): Thread lock for WebSocket connection management.
+        response_data (dict): Stores responses from the server.
+    """
+    def __init__(self, api_key: str, base_url: str = "wss://chatatp-backend.onrender.com/ws/v1/atp/llm-client/"):
+        """
+        Initialize the LLMClient.
+
+        Args:
+            api_key (str): ChatATP API key for authentication.
+            base_url (str, optional): WebSocket server URL. Defaults to "wss://chatatp-backend.onrender.com/ws/v1/atp/llm-client/".
+        """
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.ws = None
+        self.lock = threading.Lock()
+        self.response_data = {}
+        self._connect()
+
+    def _connect(self) -> None:
+        """
+        Establish a WebSocket connection with authentication.
+        """
+        with self.lock:
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                return
+
+            try:
+                self.ws = websocket.WebSocketApp(
+                    self.base_url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close
+                )
+                ws_thread = threading.Thread(target=self.ws.run_forever, kwargs={"ping_interval": 30})
+                ws_thread.daemon = True
+                ws_thread.start()
+            except Exception as e:
+                logger.error(f"Failed to initiate WebSocket connection: {e}")
+                raise WebSocketException(f"Failed to initiate WebSocket connection: {e}")
+
+    def _on_open(self, ws: websocket.WebSocketApp) -> None:
+        """
+        Handle WebSocket connection opening by sending authentication.
+
+        Args:
+            ws (websocket.WebSocketApp): WebSocket connection instance.
+        """
+        try:
+            auth_message = json.dumps({"type": "auth", "api_key": self.api_key})
+            ws.send(auth_message)
+            logger.info("WebSocket connection established and authentication sent.")
+        except Exception as e:
+            logger.error(f"Error during WebSocket authentication: {e}")
+            raise WebSocketException(f"Authentication failed: {e}")
+
+    def _on_message(self, ws: websocket.WebSocketApp, message: str) -> None:
+        """
+        Handle incoming WebSocket messages.
+
+        Args:
+            ws (websocket.WebSocketApp): WebSocket connection instance.
+            message (str): Incoming message as JSON string.
+        """
+        try:
+            data = json.loads(message)
+            message_type = data.get("type")
+            request_id = data.get("request_id")
+
+            if message_type == "auth_response":
+                if not data.get("success"):
+                    logger.error(f"Authentication failed: {data.get('error', 'Unknown error')}")
+                    ws.close()
+                else:
+                    logger.info("Authentication successful.")
+            elif message_type in ["toolkit_context", "task_response"]:
+                self.response_data[request_id] = data.get("payload", {})
+            else:
+                logger.warning(f"Received unknown message type: {message_type}")
+        except json.JSONDecodeError:
+            logger.error("Failed to parse WebSocket message as JSON.")
+        except Exception as e:
+            logger.error(f"Error processing WebSocket message: {e}")
+
+    def _on_error(self, ws: websocket.WebSocketApp, error: Exception) -> None:
+        """
+        Handle WebSocket errors.
+
+        Args:
+            ws (websocket.WebSocketApp): WebSocket connection instance.
+            error (Exception): Error encountered.
+        """
+        logger.error(f"WebSocket error: {error}")
+
+    def _on_close(self, ws: websocket.WebSocketApp, close_status_code: int, close_msg: str) -> None:
+        """
+        Handle WebSocket connection closure.
+
+        Args:
+            ws (websocket.WebSocketApp): WebSocket connection instance.
+            close_status_code (int): Status code for closure.
+            close_msg (str): Closure message.
+        """
+        logger.info(f"WebSocket closed with code {close_status_code}: {close_msg}")
+        with self.lock:
+            self.ws = None
+
+    def get_toolkit_context(self, toolkit_id: str, user_prompt: str) -> str:
+        """
+        Retrieve toolkit context from the ChatATP server and combine with user prompt.
+
+        Args:
+            toolkit_id (str): ID of the toolkit to retrieve context for.
+            user_prompt (str): User-provided prompt to append to the context.
+
+        Returns:
+            str: Combined toolkit context and user prompt.
+
+        Raises:
+            WebSocketException: If the connection fails or authentication is invalid.
+            ValueError: If the server returns an invalid response type.
+        """
+        self._connect()
+        request_id = f"context_{toolkit_id}_{int(time.time())}"
+        message = json.dumps({
+            "type": "get_toolkit_context",
+            "toolkit_id": toolkit_id,
+            "request_id": request_id,
+            "user_prompt": user_prompt
+        })
+
+        try:
+            with self.lock:
+                if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+                    raise WebSocketConnectionClosedException("WebSocket connection is closed.")
+                self.ws.send(message)
+        except WebSocketConnectionClosedException:
+            logger.error("WebSocket connection closed during get_toolkit_context.")
+            self._connect()
+            self.ws.send(message)
+        except Exception as e:
+            logger.error(f"Error sending get_toolkit_context message: {e}")
+            raise WebSocketException(f"Failed to send request: {e}")
+
+        # Wait for response
+        timeout = 30
+        start_time = time.time()
+        while request_id not in self.response_data:
+            if time.time() - start_time > timeout:
+                raise TimeoutError("Timed out waiting for toolkit context response.")
+            time.sleep(0.1)
+
+        response = self.response_data.pop(request_id)
+        if not isinstance(response, dict) or "context" not in response:
+            raise ValueError("Invalid response type received from server.")
+        
+        context = response.get("context", "")
+        return f"{context}"
+
+    def call_toolkit(self, toolkit_id: str, json_response: str) -> dict:
+        """
+        Execute a tool or workflow on the ChatATP server.
+
+        Args:
+            toolkit_id (str): ID of the toolkit to execute.
+            json_response (str): JSON string payload from an LLM response.
+
+        Returns:
+            dict: Response from the server.
+
+        Raises:
+            WebSocketException: If the connection fails or authentication is invalid.
+            ValueError: If the server returns an invalid response type.
+            json.JSONDecodeError: If the provided json_response is invalid.
+        """
+        self._connect()
+        request_id = f"task_{toolkit_id}_{int(time.time())}"
+        try:
+            json.loads(json_response)  # Validate JSON
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(f"Invalid JSON response: {e}", e.doc, e.pos)
+
+        message = json.dumps({
+            "type": "task_request",
+            "toolkit_id": toolkit_id,
+            "payload": json_response,
+            "request_id": request_id
+        })
+
+        try:
+            with self.lock:
+                if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+                    raise WebSocketConnectionClosedException("WebSocket connection is closed.")
+                self.ws.send(message)
+        except WebSocketConnectionClosedException:
+            logger.error("WebSocket connection closed during call_toolkit.")
+            self._connect()
+            self.ws.send(message)
+        except Exception as e:
+            logger.error(f"Error sending task_request message: {e}")
+            raise WebSocketException(f"Failed to send request: {e}")
+
+        # Wait for response
+        timeout = 30
+        start_time = time.time()
+        while request_id not in self.response_data:
+            if time.time() - start_time > timeout:
+                raise TimeoutError("Timed out waiting for task response.")
+            time.sleep(0.1)
+
+        response = self.response_data.pop(request_id)
+        if not isinstance(response, dict):
+            raise ValueError("Invalid response type received from server.")
+        
+        return response

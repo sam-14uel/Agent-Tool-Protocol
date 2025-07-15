@@ -1,7 +1,16 @@
-# ATP SDK API Reference
+# Agent Tool Protocol(ATP)
 
-A Python SDK for registering, exposing, and serving your own Python functions as tools via the ATP platform.  
-Supports secure OAuth2 flows, dynamic tool registration, and real-time tool invocation via WebSocket.
+<p align="center">
+  <img src="assets/light.png" alt="MCP Logo" />
+</p>
+
+<p align="center">
+  <strong>
+  A Python SDK for registering, exposing, and serving your own Python functions as tools via the ATP platform. 
+  Supports secure OAuth2 flows, dynamic tool registration, and real-time tool invocation via WebSocket.
+  </strong>
+</p>
+
 
 ---
 
@@ -26,7 +35,7 @@ Supports secure OAuth2 flows, dynamic tool registration, and real-time tool invo
 ## Installation
 
 ```sh
-pip install websocket-client requests
+pip install AgentToolProtocol
 ```
 
 ---
@@ -278,7 +287,7 @@ See LICENSE for details.
 
 ## Feedback & Issues
 
-For bug reports or feature requests, please open an issue on [GitHub](https://github.com/your-org/atp-sdk).
+For bug reports or feature requests, please open an issue on [GitHub](https://github.com/sam-14uel/Agent-Tool-Protocol).
 
 ---
 

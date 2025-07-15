@@ -1,2 +1,2 @@
-from .clients import ToolKitClient
-__version__ = "0.1.0"
+from .clients import ToolKitClient, LLMClient
+__version__ = "0.1.1"

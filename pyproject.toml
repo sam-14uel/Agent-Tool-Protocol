@@ -1,7 +1,7 @@
 [project]
 name = "AgentToolProtocol"
-version = "0.1.1"
-description = "Official SDK to register ToolKits to ChatATP"
+version = "0.1.2"
+description = "Agent Tool Protocol SDK"
 readme = "README.md"
 authors = [
   { name = "Samuel Obinna Chimdi", email = "sammyfirst6@gmail.com" }
