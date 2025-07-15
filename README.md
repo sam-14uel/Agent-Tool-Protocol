@@ -1,12 +1,12 @@
 # Agent Tool Protocol(ATP)
 
 <p align="center">
-  <img src="assets/light.png" alt="MCP Logo" />
+  <img src="assets/atp.png" alt="ATP Logo" />
 </p>
 
 <p align="center">
   <strong>
-  A Python SDK for registering, exposing, and serving your own Python functions as tools via the ATP platform. 
+  A Python SDK for registering, exposing, and serving your own Python functions as tools via the ATP platform.
   Supports secure OAuth2 flows, dynamic tool registration, and real-time tool invocation via WebSocket.
   </strong>
 </p>
