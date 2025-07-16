@@ -21,3 +21,7 @@ keywords = ["agent", "toolkit", "chat", "sdk", "llm", "ChatATP", "ChatGPT", "AI 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["atp_sdk*"]  # Only include atp_sdk and its submodules
