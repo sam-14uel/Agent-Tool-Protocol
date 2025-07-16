@@ -1,6 +1,7 @@
 import threading
 import inspect
 import hashlib
+import uuid
 # import rel
 import requests
 import websocket # websocket client package(websocket-client)
@@ -490,7 +491,7 @@ class LLMClient:
             ValueError: If the server returns an invalid response type.
         """
         self._connect()
-        request_id = f"context_{toolkit_id}_{int(time.time())}"
+        request_id = f"context_{toolkit_id}_{str(uuid.uuid4())}"
         message = json.dumps({
             "type": "get_toolkit_context",
             "toolkit_id": toolkit_id,
@@ -526,13 +527,14 @@ class LLMClient:
         context = response.get("context", "")
         return f"{context}"
 
-    def call_toolkit(self, toolkit_id: str, json_response: str) -> dict:
+    def call_toolkit(self, toolkit_id: str, json_response: str, auth_token: str=None) -> dict:
         """
         Execute a tool or workflow on the ChatATP server.
 
         Args:
             toolkit_id (str): ID of the toolkit to execute.
             json_response (str): JSON string payload from an LLM response.
+            auth_token (str, optional): Authentication token for the request.
 
         Returns:
             dict: Response from the server.
@@ -543,7 +545,7 @@ class LLMClient:
             json.JSONDecodeError: If the provided json_response is invalid.
         """
         self._connect()
-        request_id = f"task_{toolkit_id}_{int(time.time())}"
+        request_id = f"task_{toolkit_id}_{str(uuid.uuid4())}"
         try:
             json.loads(json_response)  # Validate JSON
         except json.JSONDecodeError as e:
@@ -552,8 +554,9 @@ class LLMClient:
         message = json.dumps({
             "type": "task_request",
             "toolkit_id": toolkit_id,
+            "request_id": request_id,
             "payload": json_response,
-            "request_id": request_id
+            "auth_token": auth_token if auth_token else None
         })
 
         try:
