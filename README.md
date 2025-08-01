@@ -109,8 +109,8 @@ def my_tool(**kwargs):
 - `required_params`: List of required parameter names.
 - `description`: Human-readable description.
 - `auth_provider`: Name of OAuth2 provider (e.g., "hubspot", "google"), or `None`.
-- `auth_type`: Auth type (e.g., "OAuth2"), or `None`.
-- `auth_with`: Name of the token parameter (e.g., "access_token"), or `None`.
+- `auth_type`: Auth type (e.g., "OAuth2", "apiKey"), or `None`.
+- `auth_with`: Name of the token parameter (e.g., "access_token", "api_key"), or `None`.
 
 **Returns:**  
 A decorator to wrap your function.
@@ -228,8 +228,8 @@ def echo(**kwargs):
 ```python
 @client.register_tool(
     function_name="get_contacts",
-    params=['auth_token'],
-    required_params=['auth_token'],
+    params=[],
+    required_params=[],
     description="Fetches contacts from HubSpot.",
     auth_provider="hubspot", auth_type="OAuth2", auth_with="access_token"
 )
@@ -240,6 +240,25 @@ def get_contacts(**kwargs):
     response = requests.get(url, headers=headers)
     return response.json()
 ```
+
+### Tool with API Key
+
+```python
+@client.register_tool(
+    function_name="get_contacts",
+    params=[],
+    required_params=[],
+    description="Fetches contacts from HubSpot.",
+    auth_provider="hubspot", auth_type="apiKey", auth_with="api_key"
+)
+def get_contacts(**kwargs):
+    access_token = kwargs.get('auth_token')
+    url = "https://api.hubapi.com/crm/v3/objects/contacts"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    response = requests.get(url, headers=headers)
+    return response.json()
+```
+
 
 ---
 
