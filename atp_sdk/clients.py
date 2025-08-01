@@ -527,7 +527,7 @@ class LLMClient:
         context = response.get("context", "")
         return f"{context}"
 
-    def call_toolkit(self, toolkit_id: str, json_response: str, auth_token: str=None) -> dict:
+    def call_tool(self, toolkit_id: str, json_response: str, auth_token: str=None) -> dict:
         """
         Execute a tool or workflow on the ChatATP server.
 
