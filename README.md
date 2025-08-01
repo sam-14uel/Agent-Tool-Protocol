@@ -291,12 +291,12 @@ context = llm_client.get_toolkit_context(
 
 ---
 
-### call_toolkit
+### call_tool
 
 Executes a tool or workflow on the ATP server.
 
 ```python
-response = llm_client.call_toolkit(
+response = llm_client.call_tool(
     toolkit_id="your_toolkit_id",
     json_response=json.dumps({
         "function": "hello_world",
@@ -320,13 +320,14 @@ You can use any LLM to generate the JSON workflow, then execute each step with `
 import openai
 from atp_sdk.clients import LLMClient
 
+client = openai.OpenAI(api_key="YOUR_OPENAI_API_KEY")
 llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
 
 # Get toolkit context and system prompt
 context = llm_client.get_toolkit_context(toolkit_id="your_toolkit_id", user_prompt="Create a company and then list contacts.")
 
 # Use OpenAI to generate the workflow JSON
-response = openai.ChatCompletion.create(
+response = client.completions.create(
     model="gpt-4o",
     messages=[
         {"role": "system", "content": context},
@@ -341,13 +342,13 @@ workflow = json.loads(workflow_json)
 if "workflows" in workflow:
     results = []
     for step in workflow["workflows"]:
-        result = llm_client.call_toolkit(
+        result = llm_client.call_tool(
             toolkit_id="your_toolkit_id",
             json_response=json.dumps(step)
         )
         results.append(result)
 else:
-    result = llm_client.call_toolkit(
+    result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
         json_response=workflow_json
     )
@@ -407,13 +408,13 @@ workflow = json.loads(workflow_json)
 if "workflows" in workflow:
     results = []
     for step in workflow["workflows"]:
-        result = llm_client.call_toolkit(
+        result = llm_client.call_tool(
             toolkit_id="your_toolkit_id",
             json_response=json.dumps(step)
         )
         results.append(result)
 else:
-    result = llm_client.call_toolkit(
+    result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
         json_response=workflow_json
     )
@@ -448,13 +449,13 @@ workflow = json.loads(workflow_json)
 results = []
 if "workflows" in workflow:
     for step in workflow["workflows"]:
-        result = llm_client.call_toolkit(
+        result = llm_client.call_tool(
             toolkit_id="your_toolkit_id",
             json_response=json.dumps(step)
         )
         results.append(result)
 else:
-    result = llm_client.call_toolkit(
+    result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
         json_response=workflow_json
     )
@@ -490,17 +491,6 @@ def tool1(**kwargs): ...
 
 @client.register_tool(...)
 def tool2(**kwargs): ...
-```
-
-### Keeping the Main Thread Alive
-
-```python
-client.start()
-try:
-    while True:
-        import time; time.sleep(1)
-except KeyboardInterrupt:
-    client.stop()
 ```
 
 ---
