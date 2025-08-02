@@ -1,7 +1,7 @@
 # Agent Tool Protocol(ATP)
 
 <p align="center">
-  <img src="assets/atp.png" alt="ATP Logo" />
+  <img src="https://github.com/sam-14uel/Agent-Tool-Protocol/raw/main/assets/atp.png" alt="ATP Logo" />
 </p>
 
 <p align="center">
