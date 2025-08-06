@@ -380,18 +380,19 @@ class LLMClient:
             base_url (str, optional): WebSocket server URL. Defaults to "wss://chatatp-backend.onrender.com/ws/v1/atp/llm-client/".
         """
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        self.base_url = f"{base_url.rstrip("/")}/{api_key}/"
         self.ws = None
         self.lock = threading.Lock()
         self.response_data = {}
+        self.authenticated = False  # Track authentication status
         self._connect()
 
-    def _connect(self) -> None:
+    def _connect(self):
         """
         Establish a WebSocket connection with authentication.
         """
         with self.lock:
-            if self.ws and self.ws.sock and self.ws.sock.connected:
+            if self.ws and self.ws.sock and self.ws.sock.connected and self.authenticated:
                 return
 
             try:
@@ -405,11 +406,18 @@ class LLMClient:
                 ws_thread = threading.Thread(target=self.ws.run_forever, kwargs={"ping_interval": 30})
                 ws_thread.daemon = True
                 ws_thread.start()
+
+                # Wait for authentication
+                start_time = time.time()
+                while not self.authenticated and time.time() - start_time < 10:  # 10s timeout
+                    time.sleep(0.1)
+                if not self.authenticated:
+                    raise WebSocketException("Authentication timed out.")
             except Exception as e:
                 logger.error(f"Failed to initiate WebSocket connection: {e}")
                 raise WebSocketException(f"Failed to initiate WebSocket connection: {e}")
 
-    def _on_open(self, ws: websocket.WebSocketApp) -> None:
+    def _on_open(self, ws: websocket.WebSocketApp):
         """
         Handle WebSocket connection opening by sending authentication.
 
@@ -424,7 +432,7 @@ class LLMClient:
             logger.error(f"Error during WebSocket authentication: {e}")
             raise WebSocketException(f"Authentication failed: {e}")
 
-    def _on_message(self, ws: websocket.WebSocketApp, message: str) -> None:
+    def _on_message(self, ws: websocket.WebSocketApp, message: str):
         """
         Handle incoming WebSocket messages.
 
@@ -443,6 +451,7 @@ class LLMClient:
                     ws.close()
                 else:
                     logger.info("Authentication successful.")
+                    self.authenticated = True  # Set flag on successful auth
             elif message_type in ["toolkit_context", "task_response"]:
                 self.response_data[request_id] = data.get("payload", {})
             else:
@@ -452,7 +461,7 @@ class LLMClient:
         except Exception as e:
             logger.error(f"Error processing WebSocket message: {e}")
 
-    def _on_error(self, ws: websocket.WebSocketApp, error: Exception) -> None:
+    def _on_error(self, ws: websocket.WebSocketApp, error: Exception):
         """
         Handle WebSocket errors.
 
@@ -460,9 +469,12 @@ class LLMClient:
             ws (websocket.WebSocketApp): WebSocket connection instance.
             error (Exception): Error encountered.
         """
-        logger.error(f"WebSocket error: {error}")
+        logger.error(f"WebSocket error: {error}, type: {type(error).__name__}")
+        with self.lock:
+            self.ws = None
+            self.authenticated = False
 
-    def _on_close(self, ws: websocket.WebSocketApp, close_status_code: int, close_msg: str) -> None:
+    def _on_close(self, ws: websocket.WebSocketApp, close_status_code: int, close_msg: str):
         """
         Handle WebSocket connection closure.
 
@@ -474,8 +486,9 @@ class LLMClient:
         logger.info(f"WebSocket closed with code {close_status_code}: {close_msg}")
         with self.lock:
             self.ws = None
+            self.authenticated = False
 
-    def get_toolkit_context(self, toolkit_id: str, user_prompt: str) -> str:
+    def get_toolkit_context(self, toolkit_id: str, user_prompt: str):
         """
         Retrieve toolkit context from the ChatATP server and combine with user prompt.
 
@@ -491,6 +504,8 @@ class LLMClient:
             ValueError: If the server returns an invalid response type.
         """
         self._connect()
+        if not self.authenticated:
+            raise WebSocketException("WebSocket not authenticated.")
         request_id = f"context_{toolkit_id}_{str(uuid.uuid4())}"
         message = json.dumps({
             "type": "get_toolkit_context",
@@ -525,9 +540,10 @@ class LLMClient:
             raise ValueError("Invalid response type received from server.")
         
         context = response.get("context", "")
-        return f"{context}"
+        logger.info(f"Toolkit context retrieved: \n\n{context}")
+        return f"{context}"  
 
-    def call_tool(self, toolkit_id: str, json_response: str, auth_token: str=None) -> dict:
+    def call_tool(self, toolkit_id: str, json_response: str, auth_token: str=None, user_prompt: str=None, timeout: int=120):
         """
         Execute a tool or workflow on the ChatATP server.
 
@@ -535,6 +551,8 @@ class LLMClient:
             toolkit_id (str): ID of the toolkit to execute.
             json_response (str): JSON string payload from an LLM response.
             auth_token (str, optional): Authentication token for the request.
+            user_prompt (str, optional): User prompt to include in the request.
+            timeout (int, optional): Timeout for the request in seconds. Default is 120.
 
         Returns:
             dict: Response from the server.
@@ -547,7 +565,9 @@ class LLMClient:
         self._connect()
         request_id = f"task_{toolkit_id}_{str(uuid.uuid4())}"
         try:
-            json.loads(json_response)  # Validate JSON
+            cleaned_json = clean_json_string(json_response)
+            logger.debug(f"Cleaned JSON: \n\n{cleaned_json}")
+            final_json = json.loads(cleaned_json)  # Validate JSON
         except json.JSONDecodeError as e:
             raise json.JSONDecodeError(f"Invalid JSON response: {e}", e.doc, e.pos)
 
@@ -555,8 +575,9 @@ class LLMClient:
             "type": "task_request",
             "toolkit_id": toolkit_id,
             "request_id": request_id,
-            "payload": json_response,
-            "auth_token": auth_token if auth_token else None
+            "payload": final_json,
+            "auth_token": auth_token if auth_token else None,
+            "user_prompt": user_prompt
         })
 
         try:
@@ -573,7 +594,7 @@ class LLMClient:
             raise WebSocketException(f"Failed to send request: {e}")
 
         # Wait for response
-        timeout = 30
+        timeout = timeout
         start_time = time.time()
         while request_id not in self.response_data:
             if time.time() - start_time > timeout:
@@ -584,4 +605,18 @@ class LLMClient:
         if not isinstance(response, dict):
             raise ValueError("Invalid response type received from server.")
         
-        return response
+        logger.info(f"Task response received: \n\n{response}")
+        tool_response = f"```json\n{response}```"
+        return tool_response
+
+
+def clean_json_string(json_str: str):
+    """
+    Clean a JSON string by removing markdown or extra formatting.
+    """
+    json_str = json_str.strip()
+    if json_str.startswith("```json"):
+        json_str = json_str[len("```json"):]
+    if json_str.endswith("```"):
+        json_str = json_str[:-len("```")]
+    return json_str.strip()
