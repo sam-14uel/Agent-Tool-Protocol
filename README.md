@@ -263,211 +263,305 @@ def get_contacts(**kwargs):
 ---
 
 ## Class: LLMClient
-
 The `LLMClient` lets you connect to the ATP Agent Server, retrieve toolkit context, and execute tools or workflows using JSON payloads—perfect for LLM-based agents.
 
 ### Constructor
-
 ```python
 from atp_sdk.clients import LLMClient
 
 llm_client = LLMClient(
-    api_key="YOUR_ATP_API_KEY"
+    api_key="YOUR_ATP_API_KEY",
+    protocol="ws",  # or "http"
+    base_url="https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/"
 )
 ```
+**Parameters:**
+- `api_key` (str): Your ATP API key.
+- `protocol` (str, optional): Protocol to use ("ws" or "http"). Defaults to "ws".
+- `base_url` (str, optional): ATP server URL. Defaults to `https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/`.
 
 ---
 
 ### get_toolkit_context
-
 Retrieves the toolkit context and system instructions for a given toolkit and user prompt.
-
 ```python
 context = llm_client.get_toolkit_context(
     toolkit_id="your_toolkit_id",
+    provider="openai",  # or "anthropic" or "mistralai"
     user_prompt="What do you want to achieve?"
 )
 ```
+**Returns:**
+A dictionary containing the toolkit context, including provider-specific tool schemas.
 
 ---
 
 ### call_tool
-
 Executes a tool or workflow on the ATP server.
-
 ```python
 response = llm_client.call_tool(
     toolkit_id="your_toolkit_id",
-    json_response=json.dumps({
-        "function": "hello_world",
-        "parameters": {"name": "Alice"},
-        "task_title": "Say hello",
-        "execution_type": "remote"
-    })
+    json_response='{"function": "hello_world", "parameters": {"name": "Alice"}}',
+    provider="openai",  # or "anthropic" or "mistralai"
+    user_prompt="Say hello to Alice."
 )
 print(response)
+```
+**Arguments:**
+- `toolkit_id`: Unique ID of the toolkit.
+- `json_response`: JSON payload from an LLM containing the tool call.
+- `provider`: The LLM provider (e.g., "openai", "anthropic", "mistralai").
+- `user_prompt`: Additional user input to include in the execution.
+
+---
+
+## Request/Response Flow
+
+### **1. LLM Requests Toolkit Context**
+- The LLM (OpenAI, Anthropic, or Mistral) sends a request to the ATP server to get the toolkit context.
+- The ATP server responds with a list of available tools and their schemas.
+
+**Request:**
+```json
+{
+  "type": "get_toolkit_context",
+  "toolkit_id": "your_toolkit_id",
+  "request_id": "uuid",
+  "provider": "openai",
+  "user_prompt": "What do you want to achieve?"
+}
+```
+
+**Response:**
+```json
+{
+  "type": "toolkit_context",
+  "request_id": "uuid",
+  "payload": {
+    "toolkit_id": "your_toolkit_id",
+    "toolkit_name": "Example Toolkit",
+    "caption": "Example Caption",
+    "provider": "openai",
+    "tools": [
+      {
+        "type": "function",
+        "name": "hello_world",
+        "description": "Returns a greeting.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "description": "Name to greet"}
+          },
+          "required": ["name"]
+        }
+      }
+    ],
+    "user_prompt": "What do you want to achieve?"
+  }
+}
 ```
 
 ---
 
-## Example: Using LLMClient with OpenAI, Anthropic, and Mistral AI
+### **2. LLM Generates Tool Calls**
+- The LLM uses the toolkit context to generate tool calls.
+- The LLM sends the tool calls to the ATP server for execution.
 
-You can use any LLM to generate the JSON workflow, then execute each step with `LLMClient`.
+**Request:**
+```json
+{
+  "type": "task_request",
+  "toolkit_id": "your_toolkit_id",
+  "request_id": "uuid",
+  "payload": {
+    "function": "hello_world",
+    "parameters": {"name": "Alice"}
+  },
+  "provider": "openai",
+  "user_prompt": "Say hello to Alice."
+}
+```
 
-### 1. OpenAI (GPT-4o)
+---
 
+### **3. ATP Server Executes Tool**
+- The ATP server receives the tool call and executes the corresponding tool.
+- The ATP server sends the tool's response back to the LLM.
+
+**Response:**
+```json
+{
+  "type": "task_response",
+  "request_id": "uuid",
+  "payload": {
+    "result": {"message": "Hello, Alice!"}
+  }
+}
+```
+
+---
+
+## Using LLMClient with OpenAI, Anthropic, and Mistral AI
+
+### OpenAI
 ```python
 import openai
 from atp_sdk.clients import LLMClient
 
-client = openai.OpenAI(api_key="YOUR_OPENAI_API_KEY")
+openai_client = openai.OpenAI(api_key="YOUR_OPENAI_API_KEY")
 llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
 
-# Get toolkit context and system prompt
-context = llm_client.get_toolkit_context(toolkit_id="your_toolkit_id", user_prompt="Create a company and then list contacts.")
+# Get toolkit context
+context = llm_client.get_toolkit_context(
+    toolkit_id="your_toolkit_id",
+    provider="openai",
+    user_prompt="Create a company and then list contacts."
+)
 
-# Use OpenAI to generate the workflow JSON
-response = client.completions.create(
+# Use OpenAI to generate tool calls
+response = openai_client.chat.completions.create(
     model="gpt-4o",
     messages=[
-        {"role": "system", "content": context},
+        {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Create a company and then list contacts."}
-    ]
+    ],
+    tools=context["tools"],
+    tool_choice="auto"
 )
-workflow_json = response.choices[0].message.content
 
-# Parse and execute each workflow step
-import json
-workflow = json.loads(workflow_json)
-if "workflows" in workflow:
-    results = []
-    for step in workflow["workflows"]:
-        result = llm_client.call_tool(
-            toolkit_id="your_toolkit_id",
-            json_response=json.dumps(step)
-        )
-        results.append(result)
-else:
+# Extract tool calls
+tool_calls = response.choices[0].message.tool_calls
+
+# Loop through tool calls and execute each one
+for tool_call in tool_calls:
+    tool_call_json = {
+        "function": tool_call.function.name,
+        "parameters": tool_call.function.arguments
+    }
+
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=workflow_json
+        json_response=tool_call_json,
+        provider="openai",
+        user_prompt="Create a company and then list contacts."
     )
+
+    print(f"Tool call result: {result}")
 ```
 
-### 2. Anthropic (Claude)
+---
 
+### Anthropic
 ```python
 import anthropic
 from atp_sdk.clients import LLMClient
 
+anthropic_client = anthropic.Anthropic(api_key="YOUR_ANTHROPIC_API_KEY")
 llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
-context = llm_client.get_toolkit_context(toolkit_id="your_toolkit_id", user_prompt="...")
 
-client = anthropic.Anthropic(api_key="YOUR_ANTHROPIC_API_KEY")
-response = client.messages.create(
+# Get toolkit context
+context = llm_client.get_toolkit_context(
+    toolkit_id="your_toolkit_id",
+    provider="anthropic",
+    user_prompt="Create a company and then list contacts."
+)
+
+# Use Anthropic to generate tool calls
+response = anthropic_client.messages.create(
     model="claude-3-opus-20240229",
     max_tokens=1024,
     messages=[
-        {"role": "user", "content": context}
-    ]
+        {"role": "user", "content": "Create a company and then list contacts."}
+    ],
+    tools=context["tools"]
 )
-workflow_json = response.content[0].text
 
-# Execute as above
+# Extract tool calls
+tool_calls = response.content
+
+# Loop through tool calls and execute each one
+for tool_call in tool_calls:
+    tool_call_json = {
+        "function": tool_call.name,
+        "parameters": tool_call.input
+    }
+
+    result = llm_client.call_tool(
+        toolkit_id="your_toolkit_id",
+        json_response=tool_call_json,
+        provider="anthropic",
+        user_prompt="Create a company and then list contacts."
+    )
+
+    print(f"Tool call result: {result}")
 ```
 
-### 3. Mistral AI
+---
 
+### Mistral AI
 ```python
 from mistralai.client import MistralClient
 from atp_sdk.clients import LLMClient
 
+mistral_client = MistralClient(api_key="YOUR_MISTRAL_API_KEY")
 llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
-context = llm_client.get_toolkit_context(toolkit_id="your_toolkit_id", user_prompt="...")
 
-client = MistralClient(api_key="YOUR_MISTRAL_API_KEY")
-response = client.chat(
+# Get toolkit context
+context = llm_client.get_toolkit_context(
+    toolkit_id="your_toolkit_id",
+    provider="mistralai",
+    user_prompt="Create a company and then list contacts."
+)
+
+# Use Mistral to generate tool calls
+response = mistral_client.chat(
     model="mistral-large-latest",
-    messages=[{"role": "user", "content": context}]
+    messages=[{"role": "user", "content": "Create a company and then list contacts."}],
+    tools=context["tools"]
 )
-workflow_json = response.choices[0].message.content
 
-# Execute as above
-```
+# Extract tool calls
+tool_calls = response.choices[0].message.tool_calls
 
----
+# Loop through tool calls and execute each one
+for tool_call in tool_calls:
+    tool_call_json = {
+        "function": tool_call.function.name,
+        "parameters": tool_call.function.arguments
+    }
 
-## Handling Multi-Step Workflows
-
-When the LLM returns a workflow with multiple steps:
-
-```python
-import json
-
-workflow = json.loads(workflow_json)
-if "workflows" in workflow:
-    results = []
-    for step in workflow["workflows"]:
-        result = llm_client.call_tool(
-            toolkit_id="your_toolkit_id",
-            json_response=json.dumps(step)
-        )
-        results.append(result)
-else:
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=workflow_json
+        json_response=tool_call_json,
+        provider="mistralai",
+        user_prompt="Create a company and then list contacts."
     )
-```
 
-- For each step, call `llm_client.call_toolkit` with the step JSON.
-- Collect and process results as needed.
-- If a step has `"depends_on"`, you can pass outputs from previous steps as needed.
+    print(f"Tool call result: {result}")
+```
 
 ---
 
-## Example: Full Workflow
+## Handling Multi-Step Tool Calls
+When the LLM generates multiple tool calls, loop through them and execute each one sequentially:
 
 ```python
-from atp_sdk.clients import LLMClient
-import openai
-import json
+# Loop through tool calls and execute each one
+for tool_call in tool_calls:
+    tool_call_json = {
+        "function": tool_call.function.name,
+        "parameters": tool_call.function.arguments
+    }
 
-llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
-context = llm_client.get_toolkit_context(toolkit_id="your_toolkit_id", user_prompt="...")
-
-response = openai.ChatCompletion.create(
-    model="gpt-4o",
-    messages=[
-        {"role": "system", "content": context},
-        {"role": "user", "content": "Do a multi-step task."}
-    ]
-)
-workflow_json = response.choices[0].message.content
-workflow = json.loads(workflow_json)
-
-results = []
-if "workflows" in workflow:
-    for step in workflow["workflows"]:
-        result = llm_client.call_tool(
-            toolkit_id="your_toolkit_id",
-            json_response=json.dumps(step)
-        )
-        results.append(result)
-else:
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=workflow_json
+        json_response=tool_call_json,
+        provider="openai",  # or "anthropic" or "mistralai"
+        user_prompt="Create a company and then list contacts."
     )
-    results.append(result)
 
-print(results)
+    print(f"Tool call result: {result}")
 ```
-
----
-
-**Tip:**  
-Always ensure the LLM returns valid JSON as described in the toolkit context instructions.
 
 ---
 
