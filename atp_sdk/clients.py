@@ -536,7 +536,6 @@ class LLMClient:
         self.lock = threading.Lock()
         self.response_data = {}
         self.authenticated = False
-
         if self.protocol == "ws":
             self._init_websocket()
         elif self.protocol == "http":
@@ -557,16 +556,7 @@ class LLMClient:
 
     def _init_http(self):
         """Initialize HTTP-specific attributes."""
-        self.http_url = f"{self.base_url}/api/v1/atp/llm-client/{self.api_key}/"
-
-    def _watch_idle(self):
-        """Monitor for inactivity and close the WebSocket connection if idle for too long."""
-        while True:
-            if time.time() - self.last_activity_time > self.idle_timeout:
-                print("WebSocket idle timeout reached. Closing connection...")
-                self.ws.close()
-                break
-            time.sleep(10)
+        self.http_url = f"{self.base_url}/api/v1/atp/llm-client/"
 
     def _connect(self):
         """Establish a WebSocket connection with authentication."""
@@ -641,19 +631,30 @@ class LLMClient:
             self.ws = None
             self.authenticated = False
 
-    def _http_request(self, endpoint: str, payload: dict, method: str = "POST") -> dict:
+    def _http_request(self, endpoint: str, payload: dict, method: str = "POST", stream: bool = False):
         """Make an HTTP request to the server."""
         url = f"{self.http_url}{endpoint}"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
-        try:
-            response = requests.request(method, url, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"HTTP request failed: {e}")
-            raise HTTPException(f"HTTP request failed: {e}")
+        if not stream:
+            resp = requests.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+        else:
+            resp = requests.post(url, json=payload, headers=headers, stream=True)
+            resp.raise_for_status()
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.strip():
+                    continue
+                if line.startswith("data: "):
+                    data = line[len("data: "):]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        yield json.loads(data)
+                    except Exception:
+                        yield {"error": f"Malformed chunk: {data}"}
 
-    def get_toolkit_context(self, toolkit_id: str, provider: str, user_prompt: str) -> str:
+    def get_toolkit_context(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
         """
         Retrieve the execution context for a toolkit from the server.
 
@@ -679,7 +680,7 @@ class LLMClient:
         elif self.protocol in ["http", "https"]:
             return self._get_toolkit_context_http(toolkit_id, provider, user_prompt)
 
-    def _get_toolkit_context_ws(self, toolkit_id: str, provider: str, user_prompt: str) -> str:
+    def _get_toolkit_context_ws(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
         """Retrieve toolkit context using WebSocket."""
         self._connect()
         if not self.authenticated:
@@ -689,6 +690,7 @@ class LLMClient:
             "type": "get_toolkit_context",
             "toolkit_id": toolkit_id,
             "request_id": request_id,
+            "provider": provider,
             "user_prompt": user_prompt,
         })
         try:
@@ -706,20 +708,19 @@ class LLMClient:
             if time.time() - start_time > timeout:
                 raise TimeoutError("Timed out waiting for toolkit context response.")
             time.sleep(0.1)
-        response = self.response_data.pop(request_id)
-        if not isinstance(response, dict) or "context" not in response:
-            raise ValueError("Invalid response type received from server.")
-        return response.get("context", "")
+        return self.response_data.pop(request_id)
 
-    def _get_toolkit_context_http(self, toolkit_id: str, provider: str, user_prompt: str) -> str:
+    def _get_toolkit_context_http(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
         """Retrieve toolkit context using HTTP."""
         payload = {
+            "type": "get_toolkit_context",
             "toolkit_id": toolkit_id,
+            "request_id": str(uuid.uuid4()),
             "provider": provider,
             "user_prompt": user_prompt,
         }
-        response = self._http_request("get_toolkit_context", payload)
-        return response.get("context", "")
+        response = self._http_request("process", payload)
+        return response.get("payload", {})
 
     def call_tool(self, toolkit_id: str, json_response: str, provider: str = None, auth_token: str = None, user_prompt: str = None, timeout: int = 120) -> Union[str, dict]:
         """
@@ -752,7 +753,7 @@ class LLMClient:
         elif self.protocol in ["http", "https"]:
             return self._call_tool_http(toolkit_id, json_response, provider, auth_token, user_prompt, timeout)
 
-    def _call_tool_ws(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int) -> str:
+    def _call_tool_ws(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int) -> dict:
         """Execute a tool using WebSocket."""
         self._connect()
         request_id = f"task_{toolkit_id}_{str(uuid.uuid4())}"
@@ -784,30 +785,29 @@ class LLMClient:
             if time.time() - start_time > timeout:
                 raise TimeoutError("Timed out waiting for task response.")
             time.sleep(0.1)
-        response = self.response_data.pop(request_id)
-        if not isinstance(response, dict):
-            raise ValueError("Invalid response type received from server.")
-        return f"```json\n{response}```"
+        return self.response_data.pop(request_id)
 
     def _call_tool_http(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int) -> dict:
         """Execute a tool using HTTP."""
         payload = {
+            "type": "task_request",
             "toolkit_id": toolkit_id,
-            "json_response": json.loads(self._clean_json_string(json_response)),
+            "request_id": str(uuid.uuid4()),
+            "payload": json.loads(self._clean_json_string(json_response)),
             "provider": provider,
             "auth_token": auth_token,
             "user_prompt": user_prompt,
         }
-        return self._http_request("call_tool", payload)
+        return self._http_request("process", payload, stream=True)
 
-
-def clean_json_string(json_str: str):
-    """
-    Clean a JSON string by removing markdown or extra formatting.
-    """
-    json_str = json_str.strip()
-    if json_str.startswith("```json"):
-        json_str = json_str[len("```json"):]
-    if json_str.endswith("```"):
-        json_str = json_str[:-len("```")]
-    return json_str.strip()
+    @staticmethod
+    def _clean_json_string(json_str: str) -> str:
+        """
+        Clean a JSON string by removing markdown or extra formatting.
+        """
+        json_str = json_str.strip()
+        if json_str.startswith("```json"):
+            json_str = json_str[len("```json"):]
+        if json_str.endswith("```"):
+            json_str = json_str[:-len("```")]
+        return json_str.strip()
