@@ -12,11 +12,72 @@ import logging
 import time
 # import asyncio
 from websocket import WebSocketException, WebSocketConnectionClosedException
+import os
+import hashlib
+from pathlib import Path
+from typing import Dict, Set, Optional
 # websocket.enableTrace(True)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class FileWatcher:
+    """
+    Monitors Python files for changes and triggers callbacks when code is modified.
+    """
+    def __init__(self, callback):
+        self.callback = callback
+        self.file_hashes: Dict[str, str] = {}
+        self.watched_files: Set[str] = set()
+        self.running = False
+        self.watcher_thread = None
+        
+    def add_file(self, file_path: str):
+        """Add a file to watch for changes."""
+        if os.path.exists(file_path):
+            self.watched_files.add(file_path)
+            self.file_hashes[file_path] = self._get_file_hash(file_path)
+            
+    def _get_file_hash(self, file_path: str) -> str:
+        """Get the hash of a file's contents."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                return hashlib.sha256(content.encode('utf-8')).hexdigest()
+        except Exception:
+            return ""
+            
+    def start(self):
+        """Start the file watcher thread."""
+        self.running = True
+        self.watcher_thread = threading.Thread(target=self._watch_loop, daemon=True)
+        self.watcher_thread.start()
+        
+    def stop(self):
+        """Stop the file watcher."""
+        self.running = False
+        if self.watcher_thread:
+            self.watcher_thread.join()
+            
+    def _watch_loop(self):
+        """Main watching loop that checks for file changes."""
+        while self.running:
+            try:
+                for file_path in list(self.watched_files):
+                    if not os.path.exists(file_path):
+                        continue
+                        
+                    current_hash = self._get_file_hash(file_path)
+                    if current_hash != self.file_hashes.get(file_path):
+                        logger.info(f"Code change detected in {file_path}")
+                        self.file_hashes[file_path] = current_hash
+                        self.callback(file_path)
+                        
+                time.sleep(1)  # Check every second
+            except Exception as e:
+                logger.error(f"Error in file watcher: {e}")
+                time.sleep(5)  # Wait longer on error
 
 class ToolKitClient:
     """
@@ -28,7 +89,7 @@ class ToolKitClient:
         base_url (str): Backend server URL.
         registered_tools (dict): Registered tool metadata.
     """
-    def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com"):
+    def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com" , auto_restart=True, protocol="wss", idle_timeout=300):
         """
         Initialize the ToolKitClient.
 
@@ -36,7 +97,13 @@ class ToolKitClient:
             api_key (str): Your ATP Toolkit API key.
             app_name (str): Name of your application.
             base_url (str, optional): Backend server URL of the ATP Server. Defaults to chatatp-backend.onrender.com.
+            auto_restart (bool, optional): Whether to auto-restart on code changes. Defaults to True.
+            protocol (str, optional): Connection protocol, either "ws" or "https". Defaults to "wss".
+            idle_timeout (int, optional): Idle timeout in seconds before disconnecting. Defaults to 300 seconds (5 minutes).
         """
+        self.idle_timeout = idle_timeout  # Default: 300 seconds (5 minutes)
+        self.last_activity_time = time.time()
+        self.protocol = protocol  # "ws" or "http"
         self.api_key = api_key
         self.app_name = app_name
         self.base_url = base_url.rstrip("/")
@@ -45,11 +112,69 @@ class ToolKitClient:
         self.lock = threading.Lock()
         self.ws = None
         self.ws_thread = None
+        self.auto_restart = auto_restart
 
         self.programming_language = "Python"
 
         self.loop = None
         self.running = False
+        
+        # File watching for auto-restart
+        if self.auto_restart:
+            self.file_watcher = FileWatcher(self._on_code_change)
+            self._setup_file_watching()
+        else:
+            self.file_watcher = None
+
+    def _setup_file_watching(self):
+        """Setup file watching for all registered tool files."""
+        if not self.file_watcher:
+            return
+            
+        # Get the main script file
+        main_file = inspect.stack()[-1].filename
+        if main_file and main_file != '<string>':
+            self.file_watcher.add_file(main_file)
+            
+        # Watch current working directory for Python files
+        current_dir = Path.cwd()
+        for py_file in current_dir.rglob("*.py"):
+            if py_file.is_file():
+                self.file_watcher.add_file(str(py_file))
+                
+        logger.info(f"Watching {len(self.file_watcher.watched_files)} Python files for changes")
+        
+    def _on_code_change(self, file_path: str):
+        """Handle code changes by restarting the toolkit client."""
+        logger.info(f"Code change detected in {file_path}. Restarting toolkit client...")
+        
+        # Stop current connection
+        self.stop()
+        
+        # Wait a moment for cleanup
+        time.sleep(2)
+        
+        # Re-register all tools
+        self._re_register_tools()
+        
+        # Restart the client
+        self.start()
+        
+        logger.info("Toolkit client restarted successfully after code change")
+        
+    def _re_register_tools(self):
+        """Re-register all tools after code changes."""
+        logger.info("Re-registering tools after code change...")
+        
+        # Clear existing exchange tokens
+        with self.lock:
+            self.exchange_tokens.clear()
+            
+        # Re-register each tool
+        for function_name in list(self.registered_tools.keys()):
+            self._register_with_server(function_name)
+            
+        logger.info(f"Re-registered {len(self.registered_tools)} tools")
 
     def register_tool(self, function_name, params, required_params, description, auth_provider, auth_type, auth_with):
         """
@@ -219,6 +344,7 @@ class ToolKitClient:
             ws: WebSocket connection.
             message (str): Incoming message as JSON string.
         """
+        self.last_activity_time = time.time()  # Reset timer on activity
         try:
             data = json.loads(message)
             message_type = data["message_type"]
@@ -286,11 +412,27 @@ class ToolKitClient:
         except Exception as e:
             logger.info(f"Error handling WebSocket message: {e}")
 
+    def _watch_idle(self):
+        """Monitor for inactivity and close the connection if idle for too long."""
+        while self.running:
+            if time.time() - self.last_activity_time > self.idle_timeout:
+                logger.info("WebSocket idle timeout reached. Closing connection...")
+                self.stop()
+                break
+            time.sleep(10)  # Check every 10 seconds
+
     def start(self):
         """
         Start the WebSocket client and listen for tool requests.
         """
+        # Start idle watcher thread
+        idle_thread = threading.Thread(target=self._watch_idle, daemon=True)
+        idle_thread.start()
         self.running = True
+
+        # Start file watcher if auto-restart is enabled
+        if self.file_watcher:
+            self.file_watcher.start()
 
         def run_ws():
             if self.base_url.startswith("https://"):
@@ -344,6 +486,12 @@ class ToolKitClient:
         """
         Stop the WebSocket client and close the connection.
         """
+        self.running = False
+        
+        # Stop file watcher
+        if self.file_watcher:
+            self.file_watcher.stop()
+
         if self.ws:
             self.ws.close()
         if self.ws_thread:
@@ -366,26 +514,42 @@ class LLMClient:
 
     Attributes:
         api_key (str): ChatATP LLM Client API key for authentication.
-        base_url (str): WebSocket server URL.
+        base_url (str): ATP server URL.
         ws (websocket.WebSocketApp): WebSocket connection instance.
         lock (threading.Lock): Thread lock for WebSocket connection management.
         response_data (dict): Stores responses from the server.
     """
-    def __init__(self, api_key: str, base_url: str = "wss://chatatp-backend.onrender.com/ws/v1/atp/llm-client/"):
+    def __init__(self, api_key: str, base_url: str = "https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/", protocol="ws", idle_timeout=300):
         """
         Initialize the LLMClient.
 
         Args:
             api_key (str): ChatATP API key for authentication.
-            base_url (str, optional): WebSocket server URL. Defaults to "wss://chatatp-backend.onrender.com/ws/v1/atp/llm-client/".
+            base_url (str, optional): ATP server URL. Defaults to "https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/".
         """
+        self.idle_timeout = idle_timeout
+        self.last_activity_time = time.time()
+        self.protocol = protocol
         self.api_key = api_key
-        self.base_url = f"{base_url.rstrip("/")}/{api_key}/"
+        if self.base_url.startswith("https://"):
+            ws_url = base_url.replace("https://", "wss://")
+        elif self.base_url.startswith("http://"):
+            ws_url = base_url.replace("http://", "ws://")
+        self.base_url = f"{ws_url.rstrip("/")}/{api_key}/"
         self.ws = None
         self.lock = threading.Lock()
         self.response_data = {}
         self.authenticated = False  # Track authentication status
         self._connect()
+
+    def _watch_idle(self):
+        """Monitor for inactivity and close the connection if idle for too long."""
+        while True:
+            if time.time() - self.last_activity_time > self.idle_timeout:
+                logger.info("WebSocket idle timeout reached. Closing connection...")
+                self.ws.close()
+                break
+            time.sleep(10)  # Check every 10 seconds
 
     def _connect(self):
         """
@@ -440,6 +604,7 @@ class LLMClient:
             ws (websocket.WebSocketApp): WebSocket connection instance.
             message (str): Incoming message as JSON string.
         """
+        self.last_activity_time = time.time()  # Reset timer on activity
         try:
             data = json.loads(message)
             message_type = data.get("type")
@@ -488,13 +653,14 @@ class LLMClient:
             self.ws = None
             self.authenticated = False
 
-    def get_toolkit_context(self, toolkit_id: str, user_prompt: str):
+    def get_toolkit_context(self, toolkit_id: str, provider: str, user_prompt: str):
         """
         Retrieve toolkit context from the ChatATP server and combine with user prompt.
 
         Args:
             toolkit_id (str): ID of the toolkit to retrieve context for.
             user_prompt (str): User-provided prompt to append to the context.
+            provider (str): The LLM provider whose tool/function call schema should be used (e.g., OpenAI, Anthropic). Each provider may define its own schema for how tools are invoked, so this ensures compatibility when processing the toolkit context.
 
         Returns:
             str: Combined toolkit context and user prompt.
@@ -543,13 +709,14 @@ class LLMClient:
         logger.info(f"Toolkit context retrieved: \n\n{context}")
         return f"{context}"  
 
-    def call_tool(self, toolkit_id: str, json_response: str, auth_token: str=None, user_prompt: str=None, timeout: int=120):
+    def call_tool(self, toolkit_id: str, toolkit_u_name: str, json_response: str, provider: str=None, auth_token: str=None, user_prompt: str=None, timeout: int=120):
         """
         Execute a tool or workflow on the ChatATP server.
 
         Args:
             toolkit_id (str): ID of the toolkit to execute.
-            json_response (str): JSON string payload from an LLM response.
+            json_response (str): JSON string payload representing the tool call as returned by an LLM response.
+            provider (str, optional): The LLM provider (e.g., OpenAI, Anthropic) whose tool/function call schema the json_response follows. Since each provider defines its own schema for tool invocation, this ensures the server can correctly interpret and execute the request.
             auth_token (str, optional): Authentication token for the request.
             user_prompt (str, optional): User prompt to include in the request.
             timeout (int, optional): Timeout for the request in seconds. Default is 120.
