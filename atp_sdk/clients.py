@@ -1,3 +1,7 @@
+"""
+ToolKitClient and LLMClient
+"""
+
 import threading
 import inspect
 import hashlib
@@ -515,7 +519,7 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://chatatp-backend.onrender.com",
+        base_url: str = "https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/",
         protocol: str = "ws",
         idle_timeout: int = 300,
     ):
@@ -536,9 +540,9 @@ class LLMClient:
         self.lock = threading.Lock()
         self.response_data = {}
         self.authenticated = False
-        if self.protocol == "ws":
+        if self.protocol in ["ws", "wss"]:
             self._init_websocket()
-        elif self.protocol == "http":
+        elif self.protocol in ["http", "https"]:
             self._init_http()
         else:
             raise ValueError("Unsupported protocol. Use 'ws' or 'http'.")
@@ -631,39 +635,14 @@ class LLMClient:
             self.ws = None
             self.authenticated = False
 
-    def _http_request(self, endpoint: str, payload: dict, method: str = "POST", stream: bool = False) -> Union[Dict]:
+    def _http_request(self, endpoint: str, payload: dict, method: str = "POST", stream: bool = False):
         """Make an HTTP request to the server."""
-        url = f"{self.http_url}{endpoint.rstrip('/')}/"  # Ensure trailing slash
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
-        try:
-            resp = requests.post(url, json=payload, headers=headers, stream=stream)
-            resp.raise_for_status()
-            if not stream:
-                response = resp.json()
-                print(f"_http_request (stream=False): Response type: {type(response)}, content: {response}")
-                if not isinstance(response, dict):
-                    raise HTTPException(f"Expected dict response, got {type(response)}: {response}")
-                return response
-            else:
-                final_payload = {}
-                for line in resp.iter_lines(decode_unicode=True):
-                    if not line or not line.strip():
-                        continue
-                    if line.startswith("data: "):
-                        data = line[len("data: "):]
-                        if data.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            if "payload" in chunk:
-                                final_payload.update(chunk["payload"])
-                        except Exception as e:
-                            print(f"Malformed chunk: {data}, error: {e}")
-                            raise HTTPException(f"Malformed chunk: {data}, error: {e}")
-                print(f"_http_request (stream=True): Final payload: {final_payload}")
-                return final_payload
-        except requests.RequestException as e:
-            raise HTTPException(f"HTTP request failed: {e}")
+        url = f"https://chatatp-backend.onrender.com/api/v1/atp/llm-client/process/"
+        headers = {"Content-Type": "application/json", "Authorization": f"Token 1181c154c457df418d48fc01f56d19771b95b620"}
+        # if not stream:
+        resp = requests.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
 
     def get_toolkit_context(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
         """
@@ -731,20 +710,9 @@ class LLMClient:
             "user_prompt": user_prompt,
         }
         response = self._http_request("process", payload, stream=False)
-        print(f"_get_toolkit_context_http: Response: {response}")
-        if not isinstance(response, dict):
-            raise HTTPException(f"Expected dict response, got {type(response)}: {response}")
-        payload = response.get("payload", {})
-        if not isinstance(payload, dict) or "tools" not in payload:
-            raise HTTPException(f"Invalid payload format: {payload}")
-        if not isinstance(payload["tools"], list):
-            raise HTTPException(f"Expected tools to be a list, got {type(payload['tools'])}")
-        for tool in payload["tools"]:
-            if not isinstance(tool, dict) or tool.get("type") != "function" or "function" not in tool:
-                raise HTTPException(f"Invalid tool format: {tool}")
-        return payload
+        return response.get("payload", {})
 
-    def call_tool(self, toolkit_id: str, json_response: str, provider: str = None, auth_token: str = None, user_prompt: str = None, stream_http : bool = False, timeout: int = 120) -> Union[str, dict]:
+    def call_tool(self, toolkit_id: str, json_response: str, provider: str = None, auth_token: str = None, user_prompt: str = None, timeout: int = 120) -> Union[str, dict]:
         """
         Execute a tool or workflow on the server.
 
@@ -760,7 +728,6 @@ class LLMClient:
                 tool/function call schema the json_response follows.
             auth_token (str, optional): Authentication token for the request.
             user_prompt (str, optional): Additional user input to include in the execution.
-            stream_http (bool, optional): Whether to stream HTTP responses. Default is False.
             timeout (int, optional): Timeout in seconds. Default is 120.
 
         Returns:
@@ -810,32 +777,18 @@ class LLMClient:
             time.sleep(0.1)
         return self.response_data.pop(request_id)
 
-    def _call_tool_http(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int, stream_http: bool = False) -> dict:
+    def _call_tool_http(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int) -> dict:
         """Execute a tool using HTTP."""
-        try:
-            cleaned_json = self._clean_json_string(json_response)
-            payload_data = json.loads(cleaned_json)
-        except json.JSONDecodeError as e:
-            raise json.JSONDecodeError(f"Invalid JSON response: {e}", e.doc, e.pos)
         payload = {
             "type": "task_request",
             "toolkit_id": toolkit_id,
             "request_id": str(uuid.uuid4()),
-            "payload": payload_data,
+            "payload": json.loads(self._clean_json_string(json_response)),
             "provider": provider,
             "auth_token": auth_token,
             "user_prompt": user_prompt,
         }
-        response = self._http_request("process", payload, stream=stream_http)
-        if stream_http:
-            final_payload = {}
-            for chunk in response:
-                if isinstance(chunk, dict) and "payload" in chunk:
-                    final_payload.update(chunk["payload"])
-            return final_payload
-        if not isinstance(response, dict):
-            raise HTTPException(f"Expected dict response, got {type(response)}: {response}")
-        return response.get("payload", {})
+        return self._http_request("process", payload)
 
     @staticmethod
     def _clean_json_string(json_str: str) -> str:
