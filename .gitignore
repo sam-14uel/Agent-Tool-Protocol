@@ -5,3 +5,8 @@ __pycache__/
 .vscode/
 *.pyo
 *.pyd
+.env
+.venv
+env/
+venv/
+*.sqlite3
