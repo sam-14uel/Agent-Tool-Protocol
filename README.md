@@ -589,6 +589,162 @@ def tool2(**kwargs): ...
 
 ---
 
+## Framework Integration: Django, FastAPI, and Flask
+
+### Django
+
+**How to use:**
+1. Install:  
+   `pip install AgentToolProtocol django`
+2. Add `"django_atp"` to `INSTALLED_APPS` in your `settings.py`.
+3. Include `path("", include("django_atp.urls"))` in your project `urls.py`.
+4. Register your toolkits and tools in a module in your app (e.g. `myapp/atp_tools.py`), and import this module in your app’s `apps.py` `ready()` method to ensure registration at startup:
+   ```python
+   # myapp/apps.py
+   from django.apps import AppConfig
+   class MyAppConfig(AppConfig):
+       name = "myapp"
+       def ready(self):
+           import myapp.atp_tools
+   ```
+5. Each registered tool is exposed at `/atp/<toolkit_name>/<tool_name>/` (GET for context, POST payload of parameters for execution).
+6. Visit `/atp/<toolkit_name>/` for toolkit details and a list of tools.
+
+---
+
+### FastAPI
+
+**How to use:**
+1. Install:  
+   `pip install AgentToolProtocol fastapi uvicorn`
+2. Register your toolkits and tools in a module (e.g. `atp_tools.py`), and import it in your FastAPI app before starting.
+3. Example endpoints:
+   ```python
+   from fastapi import FastAPI, Request
+   from fastapi.responses import JSONResponse
+   from fastapi_atp.registry import get_client
+   import atp_tools  # Ensure toolkit registration
+
+   app = FastAPI()
+
+   @app.get("/atp/{toolkit_name}/{tool_name}/")
+   async def get_tool(toolkit_name: str, tool_name: str):
+       client = get_client(toolkit_name)
+       if not client:
+           return JSONResponse({"error": "Toolkit not found"}, status_code=404)
+       tool = client.registered_tools.get(tool_name)
+       if not tool:
+           return JSONResponse({"error": "Tool not found"}, status_code=404)
+       return JSONResponse(tool)
+
+   @app.post("/atp/{toolkit_name}/{tool_name}/")
+   async def post_tool(toolkit_name: str, tool_name: str, request: Request):
+       client = get_client(toolkit_name)
+       if not client:
+           return JSONResponse({"error": "Toolkit not found"}, status_code=404)
+       tool = client.registered_tools.get(tool_name)
+       if not tool:
+           return JSONResponse({"error": "Tool not found"}, status_code=404)
+       params = await request.json()
+       result = tool["function"](**params)
+       return JSONResponse({"result": result})
+
+   @app.get("/atp/{toolkit_name}/")
+   async def get_toolkit(toolkit_name: str):
+       client = get_client(toolkit_name)
+       if not client:
+           return JSONResponse({"error": "Toolkit not found"}, status_code=404)
+       tools = list(client.registered_tools.keys())
+       return JSONResponse({"toolkit": toolkit_name, "tools": tools})
+   ```
+4. Run your fastAPI app with:  
+   `uvicorn your_app_module:app --reload`
+
+5. Visit `/atp/<toolkit_name>/` for toolkit details and a list of tools.
+
+6. Visit `/atp/<toolkit_name>/<tool_name>/` for tool details.
+
+---
+
+### Flask
+
+**How to use:**
+1. Install:  
+   `pip install AgentToolProtocol flask`
+2. Register your toolkits and tools in a module (e.g. `atp_tools.py`), and import it in your Flask app before starting.
+3. Example endpoints:
+   ```python
+   from flask import Flask, request, jsonify
+   from django_atp.registry import get_client
+   import atp_tools  # Ensure toolkit registration
+
+   app = Flask(__name__)
+
+   @app.route("/atp/<toolkit_name>/<tool_name>/", methods=["GET", "POST"])
+   def tool_endpoint(toolkit_name, tool_name):
+       client = get_client(toolkit_name)
+       if not client:
+           return jsonify({"error": "Toolkit not found"}), 404
+       tool = client.registered_tools.get(tool_name)
+       if not tool:
+           return jsonify({"error": "Tool not found"}), 404
+       if request.method == "GET":
+           return jsonify(tool)
+       params = request.json if request.is_json else request.form.to_dict()
+       result = tool["function"](**params)
+       return jsonify({"result": result})
+
+   @app.route("/atp/<toolkit_name>/", methods=["GET"])
+   def toolkit_endpoint(toolkit_name):
+       client = get_client(toolkit_name)
+       if not client:
+           return jsonify({"error": "Toolkit not found"}), 404
+       tools = list(client.registered_tools.keys())
+       return jsonify({"toolkit": toolkit_name, "tools": tools})
+
+   if __name__ == "__main__":
+       app.run(debug=True)
+   ```
+
+4. Run your Flask app with:  
+   `python your_flask_app.py`
+
+5. Visit `/atp/<toolkit_name>/` for toolkit details and a list of tools.
+
+6. Visit `/atp/<toolkit_name>/<tool_name>/` for tool details.
+
+
+# Example atp_tools.py for Flask/FastAPI/Django
+
+```python
+from atp_sdk.clients import ToolKitClient
+from django_atp.registry import register_client  # For Django
+from fastapi_atp.registry import register_client  # For FastAPI
+from flask_atp.registry import register_client  # For Flask
+
+# Initialize the client
+client = ToolKitClient(
+    api_key="YOUR_ATP_API_KEY",
+    app_name="<your_toolkit_name>"
+)
+
+# Register the client (Django/FastAPI/Flask)
+register_client("<your_toolkit_name>", client)
+
+# Define and register tools the usual way but this time no need to call start() at the end of the file
+@client.register_tool(
+    function_name="hello_world",
+    params=['name'],
+    required_params=['name'],
+    description="Returns a greeting.",
+    auth_provider=None, auth_type=None, auth_with=None
+)
+def hello_world(name):
+    return f"Hello, {name}!"
+```
+
+---
+
 ## License
 
 MIT License.  
