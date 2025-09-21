@@ -6,19 +6,16 @@ import threading
 import inspect
 import hashlib
 import uuid
-# import rel
 import requests
 import websocket
 import json
 import logging
 import time
-# import asyncio
 from websocket import WebSocketException, WebSocketConnectionClosedException
 import os
 import hashlib
 from pathlib import Path
-from typing import Dict, Set, Optional, Union
-# websocket.enableTrace(True)
+from typing import Dict, Set
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,34 +31,33 @@ class FileWatcher:
         self.watched_files: Set[str] = set()
         self.running = False
         self.watcher_thread = None
-        
     def add_file(self, file_path: str):
         """Add a file to watch for changes."""
         if os.path.exists(file_path):
             self.watched_files.add(file_path)
             self.file_hashes[file_path] = self._get_file_hash(file_path)
-            
+
     def _get_file_hash(self, file_path: str) -> str:
         """Get the hash of a file's contents."""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                return hashlib.sha256(content.encode('utf-8')).hexdigest()
+                return hashlib.sha256(content.encode("utf-8")).hexdigest()
         except Exception:
             return ""
-            
+
     def start(self):
         """Start the file watcher thread."""
         self.running = True
         self.watcher_thread = threading.Thread(target=self._watch_loop, daemon=True)
         self.watcher_thread.start()
-        
+
     def stop(self):
         """Stop the file watcher."""
         self.running = False
         if self.watcher_thread:
             self.watcher_thread.join()
-            
+
     def _watch_loop(self):
         """Main watching loop that checks for file changes."""
         while self.running:
@@ -69,17 +65,18 @@ class FileWatcher:
                 for file_path in list(self.watched_files):
                     if not os.path.exists(file_path):
                         continue
-                        
+
                     current_hash = self._get_file_hash(file_path)
                     if current_hash != self.file_hashes.get(file_path):
                         logger.info(f"Code change detected in {file_path}")
                         self.file_hashes[file_path] = current_hash
                         self.callback(file_path)
-                        
+
                 time.sleep(1)  # Check every second
             except Exception as e:
                 logger.error(f"Error in file watcher: {e}")
                 time.sleep(5)  # Wait longer on error
+
 
 class ToolKitClient:
     """
@@ -91,7 +88,17 @@ class ToolKitClient:
         base_url (str): Backend server URL.
         registered_tools (dict): Registered tool metadata.
     """
-    def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com", endpoint_url=None, auto_restart=True, protocol="http", idle_timeout=300):
+
+    def __init__(
+        self,
+        api_key,
+        app_name,
+        base_url="https://chatatp-backend.onrender.com",
+        endpoint_url=None,
+        auto_restart=True,
+        protocol="http",
+        idle_timeout=300,
+    ):
         """
         Initialize the ToolKitClient.
 
@@ -122,7 +129,7 @@ class ToolKitClient:
 
         self.loop = None
         self.running = False
-        
+
         # File watching for auto-restart
         if self.auto_restart:
             self.file_watcher = FileWatcher(self._on_code_change)
@@ -134,53 +141,66 @@ class ToolKitClient:
         """Setup file watching for all registered tool files."""
         if not self.file_watcher:
             return
-            
+
         # Get the main script file
         main_file = inspect.stack()[-1].filename
-        if main_file and main_file != '<string>':
+        if main_file and main_file != "<string>":
             self.file_watcher.add_file(main_file)
-            
+
         # Watch current working directory for Python files
         current_dir = Path.cwd()
         for py_file in current_dir.rglob("*.py"):
             if py_file.is_file():
                 self.file_watcher.add_file(str(py_file))
-                
-        logger.info(f"Watching {len(self.file_watcher.watched_files)} Python files for changes")
-        
+
+        logger.info(
+            f"Watching {len(self.file_watcher.watched_files)} Python files for changes"
+        )
+
     def _on_code_change(self, file_path: str):
         """Handle code changes by restarting the toolkit client."""
-        logger.info(f"Code change detected in {file_path}. Restarting toolkit client...")
-        
+        logger.info(
+            f"Code change detected in {file_path}. Restarting toolkit client..."
+        )
+
         # Stop current connection
         self.stop()
-        
+
         # Wait a moment for cleanup
         time.sleep(2)
-        
+
         # Re-register all tools
         self._re_register_tools()
-        
+
         # Restart the client
         self.start()
-        
+
         logger.info("Toolkit client restarted successfully after code change")
-        
+
     def _re_register_tools(self):
         """Re-register all tools after code changes."""
         logger.info("Re-registering tools after code change...")
-        
+
         # Clear existing exchange tokens
         with self.lock:
             self.exchange_tokens.clear()
-            
+
         # Re-register each tool
         for function_name in list(self.registered_tools.keys()):
             self._register_with_server(function_name)
-            
+
         logger.info(f"Re-registered {len(self.registered_tools)} tools")
 
-    def register_tool(self, function_name, params, required_params, description, auth_provider, auth_type, auth_with):
+    def register_tool(
+        self,
+        function_name,
+        params,
+        required_params,
+        description,
+        auth_provider,
+        auth_type,
+        auth_with,
+    ):
         """
         Register a Python function as a remote tool.
 
@@ -196,9 +216,10 @@ class ToolKitClient:
         Returns:
             decorator: A decorator to wrap the tool function.
         """
+
         def decorator(func):
             # Ensure 'access_token' is NOT in user function signature
-            #sig = inspect.signature(func)
+            # sig = inspect.signature(func)
             # if "access_token" in sig.parameters:
             #     raise ValueError(
             #         f"In tool '{function_name}': 'access_token' must not be declared in your function signature.\n"
@@ -220,12 +241,13 @@ class ToolKitClient:
                 "auth_with": auth_with,
                 "source_code": source_code,
                 "code_hash": code_hash,
-                "function_id": function_name
+                "function_id": function_name,
             }
 
             # Register with server
             self._register_with_server(function_name)
             return func
+
         return decorator
 
     def _register_with_server(self, function_name):
@@ -265,8 +287,8 @@ class ToolKitClient:
                 "auth_type": tool_data["auth_type"],
                 "auth_with": tool_data["auth_with"],
                 "sample_response": response,
-                "source_code": source_code  # <-- Include full source code here
-            }
+                "source_code": source_code,  # <-- Include full source code here
+            },
         }
 
         url = f"{self.base_url}/api/v1/register_tool"
@@ -282,7 +304,9 @@ class ToolKitClient:
             logger.info(f" Tool '{function_name}' registered successfully. ✔️")
         else:
             # logger.error(f"Failed to register tool '{function_name}': {resp.status_code} - {resp.text}")
-            logger.info(f"⚠️ Failed to register tool '{function_name}' ❌: {resp.status_code} - {resp.text}")
+            logger.info(
+                f"⚠️ Failed to register tool '{function_name}' ❌: {resp.status_code} - {resp.text}"
+            )
 
     def _generate_sample_params(self, param_defs):
         """
@@ -315,13 +339,15 @@ class ToolKitClient:
             exchange_token = self.exchange_tokens.pop(function_id, None)
 
         if not exchange_token:
-            logger.warning(f"No valid exchange token for '{function_id}'. Skipping report.")
+            logger.warning(
+                f"No valid exchange token for '{function_id}'. Skipping report."
+            )
             return
 
         payload = {
             "exchange_token": exchange_token,
             "result": result,
-            "function_id": function_id
+            "function_id": function_id,
         }
 
         url = f"{self.base_url}/api/v1/execute_function"
@@ -334,7 +360,9 @@ class ToolKitClient:
             if resp.status_code == 200:
                 logger.info(f"Execution of '{function_id}' reported successfully.")
             else:
-                logger.error(f"Failed to report execution for '{function_id}': {resp.status_code} - {resp.text}")
+                logger.error(
+                    f"Failed to report execution for '{function_id}': {resp.status_code} - {resp.text}"
+                )
         except Exception as e:
             logger.exception(f"Error reporting execution for '{function_id}': {e}")
 
@@ -358,7 +386,9 @@ class ToolKitClient:
                 tool_name = payload.get("tool_name")
                 params = payload.get("params", {})
                 auth_token = payload.get("auth_token")  # optional, if needed
-                logger.info(f"Received tool request for '{tool_name}' with params: {params}")
+                logger.info(
+                    f"Received tool request for '{tool_name}' with params: {params}"
+                )
 
                 if tool_name in self.registered_tools:
                     tool_data = self.registered_tools[tool_name]
@@ -370,41 +400,65 @@ class ToolKitClient:
                             call_params = params.copy()
                             if "auth_token" in sig.parameters and auth_token:
                                 call_params["auth_token"] = auth_token
-                            elif any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()) and auth_token:
+                            elif (
+                                any(
+                                    p.kind == inspect.Parameter.VAR_KEYWORD
+                                    for p in sig.parameters.values()
+                                )
+                                and auth_token
+                            ):
                                 call_params["auth_token"] = auth_token
                             elif "auth_token" in sig.parameters and not auth_token:
-                                error_result = {"error": f"Function '{tool_name}' requires 'auth_token', but none was provided."}
-                                ws.send(json.dumps({
-                                    "type": "tool_response",
-                                    "request_id": request_id,
-                                    "result": error_result
-                                }))
+                                error_result = {
+                                    "error": f"Function '{tool_name}' requires 'auth_token', but none was provided."
+                                }
+                                ws.send(
+                                    json.dumps(
+                                        {
+                                            "type": "tool_response",
+                                            "request_id": request_id,
+                                            "result": error_result,
+                                        }
+                                    )
+                                )
                             # Call function with auth_token if not in signature
                             result = func(**call_params)
                             # Send response
-                            ws.send(json.dumps({
-                                "type": "tool_response",
-                                "request_id": request_id,
-                                "result": result
-                            }))
+                            ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "tool_response",
+                                        "request_id": request_id,
+                                        "result": result,
+                                    }
+                                )
+                            )
                             # self._report_execution(tool_name, result)
                         else:
                             # Call function without auth_token if not in signature
                             result = func(**params)
                             # Send response
-                            ws.send(json.dumps({
-                                "type": "tool_response",
-                                "request_id": request_id,
-                                "result": result
-                            }))
+                            ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "tool_response",
+                                        "request_id": request_id,
+                                        "result": result,
+                                    }
+                                )
+                            )
                             # self._report_execution(tool_name, result)
                     except Exception as e:
                         error_result = {"error": str(e)}
-                        ws.send(json.dumps({
-                            "type": "tool_response",
-                            "request_id": request_id,
-                            "result": error_result
-                        }))
+                        ws.send(
+                            json.dumps(
+                                {
+                                    "type": "tool_response",
+                                    "request_id": request_id,
+                                    "result": error_result,
+                                }
+                            )
+                        )
                         # self._report_execution(tool_name, error_result)
                 else:
                     logger.info(f"Unknown tool requested: {tool_name}")
@@ -431,10 +485,7 @@ class ToolKitClient:
         """
         if not self.endpoint_url:
             raise ValueError("No endpoint_url configured for HTTP mode.")
-        payload = {
-            "request_id": request_id,
-            "result": result
-        }
+        payload = {"request_id": request_id, "result": result}
         resp = requests.post(self.endpoint_url, json=payload, timeout=30)
         resp.raise_for_status()
         return resp.json()
@@ -444,14 +495,15 @@ class ToolKitClient:
         Send tool execution result to ATP server inbox endpoint.
         """
         url = f"{self.base_url}/api/v1/toolkit/{self.api_key}/inbox/respond"
-        payload = {
-            "request_id": request_id,
-            "response": result
-        }
-        logger.info(f"Sending result to inbox: request_id={request_id}, result={result}")
+        payload = {"request_id": request_id, "response": result}
+        logger.info(
+            f"Sending result to inbox: request_id={request_id}, result={result}"
+        )
         try:
             resp = requests.post(url, json=payload, timeout=30)
-            logger.info(f"Inbox response: status={resp.status_code}, content={resp.text}")
+            logger.info(
+                f"Inbox response: status={resp.status_code}, content={resp.text}"
+            )
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
@@ -466,21 +518,29 @@ class ToolKitClient:
         logger.info(f"Polling inbox at {url}")
         try:
             resp = requests.get(url, timeout=30)
-            logger.info(f"Inbox poll response: status={resp.status_code}, content={resp.text}")
+            logger.info(
+                f"Inbox poll response: status={resp.status_code}, content={resp.text}"
+            )
             if resp.status_code == 200:
                 try:
                     response_data = resp.json()
                     if response_data:
-                        logger.info(f"Received inbox request: {json.dumps(response_data, indent=2)}")
+                        logger.info(
+                            f"Received inbox request: {json.dumps(response_data, indent=2)}"
+                        )
                         return response_data
                     else:
                         logger.debug("Inbox is empty")
                         return None
                 except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse inbox response JSON: {e}, response={resp.text}")
+                    logger.error(
+                        f"Failed to parse inbox response JSON: {e}, response={resp.text}"
+                    )
                     return None
             else:
-                logger.warning(f"Inbox poll failed: status={resp.status_code}, response={resp.text}")
+                logger.warning(
+                    f"Inbox poll failed: status={resp.status_code}, response={resp.text}"
+                )
                 return None
         except requests.RequestException as e:
             logger.error(f"Error polling inbox: {e}")
@@ -499,7 +559,9 @@ class ToolKitClient:
                     tool_name = req.get("tool_name")
                     params = req.get("params", {})
                     auth_token = req.get("auth_token")
-                    logger.info(f"Processing inbox request: request_id={request_id}, tool_name={tool_name}, params={params}, auth_token={'<hidden>' if auth_token else None}")
+                    logger.info(
+                        f"Processing inbox request: request_id={request_id}, tool_name={tool_name}, params={params}, auth_token={'<hidden>' if auth_token else None}"
+                    )
 
                     if tool_name in self.registered_tools:
                         logger.info(f"Found registered tool: {tool_name}")
@@ -507,21 +569,38 @@ class ToolKitClient:
                         sig = inspect.signature(func)
                         try:
                             call_params = params.copy()
-                            if auth_token and ("auth_token" in sig.parameters or any(
-                                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())):
+                            if auth_token and (
+                                "auth_token" in sig.parameters
+                                or any(
+                                    p.kind == inspect.Parameter.VAR_KEYWORD
+                                    for p in sig.parameters.values()
+                                )
+                            ):
                                 call_params["auth_token"] = auth_token
-                                logger.debug(f"Added auth_token to call parameters for {tool_name}")
-                            logger.info(f"Executing tool {tool_name} with params: {call_params}")
+                                logger.debug(
+                                    f"Added auth_token to call parameters for {tool_name}"
+                                )
+                            logger.info(
+                                f"Executing tool {tool_name} with params: {call_params}"
+                            )
                             result = func(**call_params)
-                            logger.info(f"Tool {tool_name} executed successfully, result: {result}")
+                            logger.info(
+                                f"Tool {tool_name} executed successfully, result: {result}"
+                            )
                             self._send_tool_result_inbox(request_id, result)
-                            logger.info(f"Sent result for request_id={request_id} to inbox")
+                            logger.info(
+                                f"Sent result for request_id={request_id} to inbox"
+                            )
                         except Exception as e:
-                            logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                            logger.error(
+                                f"Error executing tool {tool_name}: {e}", exc_info=True
+                            )
                             error_result = {"error": str(e)}
                             self._send_tool_result_inbox(request_id, error_result)
                     else:
-                        logger.warning(f"Tool {tool_name} not found in registered tools")
+                        logger.warning(
+                            f"Tool {tool_name} not found in registered tools"
+                        )
                 else:
                     logger.debug("No pending requests in inbox")
                 time.sleep(30)  # Poll every 30 seconds
@@ -552,7 +631,6 @@ class ToolKitClient:
         self.ws_thread = thread
         self.run_forever()
 
-
     def _run_ws_loop(self):
         if self.base_url.startswith("https://"):
             ws_url = self.base_url.replace("https://", "wss://")
@@ -567,7 +645,7 @@ class ToolKitClient:
                     on_open=lambda ws: logger.info("WebSocket connection established."),
                     on_message=self.on_message,
                     on_error=on_error,
-                    on_close=on_close
+                    on_close=on_close,
                 )
                 self.ws.run_forever(ping_interval=30)
                 logger.warning("WebSocket disconnected. Reconnecting in 5 seconds...")
@@ -614,8 +692,13 @@ class ToolKitClient:
 
                     try:
                         call_params = params.copy()
-                        if auth_token and ("auth_token" in sig.parameters or any(
-                                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())):
+                        if auth_token and (
+                            "auth_token" in sig.parameters
+                            or any(
+                                p.kind == inspect.Parameter.VAR_KEYWORD
+                                for p in sig.parameters.values()
+                            )
+                        ):
                             call_params["auth_token"] = auth_token
 
                         result = func(**call_params)
@@ -631,8 +714,6 @@ class ToolKitClient:
         except Exception as e:
             logger.error(f"Error handling HTTP message: {e}")
 
-
-
     def run_forever(self):
         """
         Keep the main thread alive until stopped.
@@ -643,13 +724,12 @@ class ToolKitClient:
         except KeyboardInterrupt:
             self.stop()
 
-
     def stop(self):
         """
         Stop the WebSocket client and close the connection.
         """
         self.running = False
-        
+
         # Stop file watcher
         if self.file_watcher:
             self.file_watcher.stop()
@@ -664,6 +744,7 @@ class ToolKitClient:
 def on_error(ws, error):
     logger.exception(f"WebSocket error: {error}")
 
+
 def on_close(ws, code, reason):
     logger.error(f"WebSocket closed with code {code} and reason: {reason}")
 
@@ -671,17 +752,20 @@ def on_close(ws, code, reason):
 class WebSocketException(Exception):
     pass
 
+
 class HTTPException(Exception):
     pass
+
 
 class LLMClient:
     """
     LLMClient manages connections to the ATP Agent Server for toolkit context retrieval
     and remote tool execution. Supports both WebSocket and HTTP protocols.
-    
+
     This client is designed to work seamlessly with popular LLM providers like OpenAI,
     Anthropic, and Mistral by handling tool call formatting automatically.
     """
+
     def __init__(
         self,
         api_key: str,
@@ -691,10 +775,10 @@ class LLMClient:
     ):
         """
         Initialize the LLMClient.
-        
+
         Args:
             api_key (str): ATP API key for authentication.
-            protocol (str): Connection protocol. Options: "ws", "wss", "http", "https". 
+            protocol (str): Connection protocol. Options: "ws", "wss", "http", "https".
                           Defaults to "https".
             base_url (str): Server URL. Defaults to "https://chatatp-backend.onrender.com".
             idle_timeout (int): Idle timeout in seconds. Defaults to 300.
@@ -704,20 +788,22 @@ class LLMClient:
         self.base_url = base_url.rstrip("/")
         self.idle_timeout = idle_timeout
         self.last_activity_time = time.time()
-        
+
         # Connection management
         self.ws = None
         self.lock = threading.Lock()
         self.response_data = {}
         self.authenticated = False
-        
+
         # Initialize based on protocol
         if self.protocol in ["ws", "wss"]:
             self._init_websocket()
         elif self.protocol in ["http", "https"]:
             self._init_http()
         else:
-            raise ValueError("Unsupported protocol. Use 'ws', 'wss', 'http', or 'https'.")
+            raise ValueError(
+                "Unsupported protocol. Use 'ws', 'wss', 'http', or 'https'."
+            )
 
     def _init_websocket(self):
         """Initialize WebSocket-specific attributes."""
@@ -737,7 +823,12 @@ class LLMClient:
     def _connect(self):
         """Establish a WebSocket connection with authentication."""
         with self.lock:
-            if self.ws and self.ws.sock and self.ws.sock.connected and self.authenticated:
+            if (
+                self.ws
+                and self.ws.sock
+                and self.ws.sock.connected
+                and self.authenticated
+            ):
                 return
             try:
                 self.ws = websocket.WebSocketApp(
@@ -747,7 +838,9 @@ class LLMClient:
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                ws_thread = threading.Thread(target=self.ws.run_forever, kwargs={"ping_interval": 30})
+                ws_thread = threading.Thread(
+                    target=self.ws.run_forever, kwargs={"ping_interval": 30}
+                )
                 ws_thread.daemon = True
                 ws_thread.start()
                 # Wait for authentication
@@ -758,7 +851,9 @@ class LLMClient:
                     raise WebSocketException("Authentication timed out.")
             except Exception as e:
                 print(f"Failed to initiate WebSocket connection: {e}")
-                raise WebSocketException(f"Failed to initiate WebSocket connection: {e}")
+                raise WebSocketException(
+                    f"Failed to initiate WebSocket connection: {e}"
+                )
 
     def _on_open(self, ws: websocket.WebSocketApp):
         """Handle WebSocket connection opening by sending authentication."""
@@ -779,7 +874,9 @@ class LLMClient:
             request_id = data.get("request_id")
             if message_type == "auth_response":
                 if not data.get("success"):
-                    print(f"Authentication failed: {data.get('error', 'Unknown error')}")
+                    print(
+                        f"Authentication failed: {data.get('error', 'Unknown error')}"
+                    )
                     ws.close()
                 else:
                     print("Authentication successful.")
@@ -800,14 +897,18 @@ class LLMClient:
             self.ws = None
             self.authenticated = False
 
-    def _on_close(self, ws: websocket.WebSocketApp, close_status_code: int, close_msg: str):
+    def _on_close(
+        self, ws: websocket.WebSocketApp, close_status_code: int, close_msg: str
+    ):
         """Handle WebSocket connection closure."""
         print(f"WebSocket closed with code {close_status_code}: {close_msg}")
         with self.lock:
             self.ws = None
             self.authenticated = False
 
-    def _http_request(self, endpoint: str, payload: dict, method: str = "POST", stream: bool = False):
+    def _http_request(
+        self, endpoint: str, payload: dict, method: str = "POST", stream: bool = False
+    ):
         """Make an HTTP request to the server."""
         url = f"https://chatatp-backend.onrender.com/api/v1/atp/llm-client/process/"
         # if not stream:
@@ -816,12 +917,14 @@ class LLMClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_toolkit_context(self, toolkit_id: str, user_prompt: str, provider: str = "openai") -> dict:
+    def get_toolkit_context(
+        self, toolkit_id: str, user_prompt: str, provider: str = "openai"
+    ) -> dict:
         """
         Retrieve the execution context for a toolkit from the server.
 
-        The context combines provider-specific schema details (e.g., OpenAI, Anthropic, Mistral) 
-        with the given user prompt, ensuring the request aligns with the provider's 
+        The context combines provider-specific schema details (e.g., OpenAI, Anthropic, Mistral)
+        with the given user prompt, ensuring the request aligns with the provider's
         tool/function call format.
 
         Args:
@@ -842,19 +945,23 @@ class LLMClient:
         elif self.protocol in ["http", "https"]:
             return self._get_toolkit_context_http(toolkit_id, user_prompt, provider)
 
-    def _get_toolkit_context_ws(self, toolkit_id: str, user_prompt: str, provider: str) -> dict:
+    def _get_toolkit_context_ws(
+        self, toolkit_id: str, user_prompt: str, provider: str
+    ) -> dict:
         """Retrieve toolkit context using WebSocket."""
         self._connect()
         if not self.authenticated:
             raise WebSocketException("WebSocket not authenticated.")
         request_id = f"context_{toolkit_id}_{str(uuid.uuid4())}"
-        message = json.dumps({
-            "type": "get_toolkit_context",
-            "toolkit_id": toolkit_id,
-            "request_id": request_id,
-            "provider": provider,
-            "user_prompt": user_prompt,
-        })
+        message = json.dumps(
+            {
+                "type": "get_toolkit_context",
+                "toolkit_id": toolkit_id,
+                "request_id": request_id,
+                "provider": provider,
+                "user_prompt": user_prompt,
+            }
+        )
         try:
             with self.lock:
                 if not self.ws or not self.ws.sock or not self.ws.sock.connected:
@@ -872,7 +979,9 @@ class LLMClient:
             time.sleep(0.1)
         return self.response_data.pop(request_id)
 
-    def _get_toolkit_context_http(self, toolkit_id: str, user_prompt: str, provider: str) -> dict:
+    def _get_toolkit_context_http(
+        self, toolkit_id: str, user_prompt: str, provider: str
+    ) -> dict:
         """Retrieve toolkit context using HTTP."""
         payload = {
             "type": "get_toolkit_context",
@@ -884,7 +993,16 @@ class LLMClient:
         response = self._http_request("process", payload, stream=False)
         return response.get("payload", {})
 
-    def call_tool(self, toolkit_id: str, tool_calls: list, provider: str = "openai", auth_token: str = None, user_prompt: str = None, timeout: int = 120, sequential: bool = False) -> list:
+    def call_tool(
+        self,
+        toolkit_id: str,
+        tool_calls: list,
+        provider: str = "openai",
+        auth_token: str = None,
+        user_prompt: str = None,
+        timeout: int = 120,
+        sequential: bool = False,
+    ) -> list:
         """
         Execute tool calls from LLM providers on the server.
 
@@ -894,7 +1012,7 @@ class LLMClient:
         Args:
             toolkit_id (str): Unique ID/name/identifier of the toolkit instance to execute.
             tool_calls (list): List of tool call objects from LLM response.
-            provider (str): The LLM provider. Options: "openai", "anthropic", "mistralai", "mistral". 
+            provider (str): The LLM provider. Options: "openai", "anthropic", "mistralai", "mistral".
                           Defaults to "openai".
             auth_token (str, optional): Authentication token for the request.
             user_prompt (str, optional): Additional user input to include in the execution.
@@ -911,63 +1029,89 @@ class LLMClient:
         if not tool_calls:
             logger.warning("No tool calls provided")
             return []
-            
+
         # Format tool calls for the backend
         formatted_calls = self._format_tool_calls(tool_calls, provider)
-        
+
         if sequential:
             # Execute tool calls one by one
-            return self._call_tool_sequential(toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout)
+            return self._call_tool_sequential(
+                toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout
+            )
         else:
             # Execute tool calls in parallel (default behavior)
             if self.protocol in ["ws", "wss"]:
-                return self._call_tool_ws(toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout)
+                return self._call_tool_ws(
+                    toolkit_id,
+                    formatted_calls,
+                    provider,
+                    auth_token,
+                    user_prompt,
+                    timeout,
+                )
             elif self.protocol in ["http", "https"]:
-                return self._call_tool_http(toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout)
+                return self._call_tool_http(
+                    toolkit_id,
+                    formatted_calls,
+                    provider,
+                    auth_token,
+                    user_prompt,
+                    timeout,
+                )
 
     def _format_tool_calls(self, tool_calls: list, provider: str) -> list:
         """
         Format tool calls from different providers to a consistent format for the backend.
-        
+
         Args:
             tool_calls (list): Raw tool calls from LLM provider
             provider (str): Provider name
-            
+
         Returns:
             list: Formatted tool calls for backend
         """
         formatted_calls = []
-        
+
         for tool_call in tool_calls:
             try:
                 if provider in ["openai"]:
                     # OpenAI format: {id, function: {name, arguments}}
-                    if hasattr(tool_call, 'get'):
+                    if hasattr(tool_call, "get"):
                         # Dictionary format
                         formatted_call = {
                             "id": tool_call.get("id", ""),
                             "function": tool_call.get("function", {}).get("name", ""),
-                            "arguments": tool_call.get("function", {}).get("arguments", {}),
-                            "type": "function"
+                            "arguments": tool_call.get("function", {}).get(
+                                "arguments", {}
+                            ),
+                            "type": "function",
                         }
                     else:
                         # Object format
                         formatted_call = {
                             "id": getattr(tool_call, "id", ""),
-                            "function": getattr(tool_call.function, "name", "") if hasattr(tool_call, "function") else "",
-                            "arguments": getattr(tool_call.function, "arguments", {}) if hasattr(tool_call, "function") else {},
-                            "type": "function"
+                            "function": (
+                                getattr(tool_call.function, "name", "")
+                                if hasattr(tool_call, "function")
+                                else ""
+                            ),
+                            "arguments": (
+                                getattr(tool_call.function, "arguments", {})
+                                if hasattr(tool_call, "function")
+                                else {}
+                            ),
+                            "type": "function",
                         }
-                        
+
                 elif provider in ["anthropic"]:
                     # Anthropic format: {id, name, input}
-                    if hasattr(tool_call, 'get'):
+                    if hasattr(tool_call, "get"):
                         # Dictionary format
                         formatted_call = {
                             "id": tool_call.get("id", ""),
                             "function": tool_call.get("name", ""),
                             "arguments": tool_call.get("input", {}),
-                            "type": "function"
+                            "type": "function",
                         }
                     else:
                         # Object format
@@ -975,24 +1119,24 @@ class LLMClient:
                             "id": getattr(tool_call, "id", ""),
                             "function": getattr(tool_call, "name", ""),
                             "arguments": getattr(tool_call, "input", {}),
-                            "type": "function"
+                            "type": "function",
                         }
-                        
+
                 elif provider in ["mistralai", "mistral"]:
                     # Mistral format: ToolCall object with function, id, type, index
-                    if hasattr(tool_call, 'get'):
+                    if hasattr(tool_call, "get"):
                         # Dictionary format
                         formatted_call = {
                             "id": tool_call.get("id", ""),
                             "function": tool_call.get("name", ""),
                             "arguments": tool_call.get("arguments", {}),
-                            "type": "function"
+                            "type": "function",
                         }
                     else:
                         # Mistral ToolCall object format
                         function_name = ""
                         arguments = {}
-                        
+
                         if hasattr(tool_call, "function"):
                             function_name = getattr(tool_call.function, "name", "")
                             # Parse arguments if it's a string
@@ -1001,65 +1145,101 @@ class LLMClient:
                                 try:
                                     arguments = json.loads(args_str)
                                 except json.JSONDecodeError as e:
-                                    logger.warning(f"Failed to parse Mistral arguments '{args_str}': {e}")
+                                    logger.warning(
+                                        f"Failed to parse Mistral arguments '{args_str}': {e}"
+                                    )
                                     arguments = {}
                             else:
                                 arguments = args_str
-                        
+
                         formatted_call = {
                             "id": getattr(tool_call, "id", ""),
                             "function": function_name,
                             "arguments": arguments,
-                            "type": "function"
+                            "type": "function",
                         }
-                        
+
                 else:
                     # Generic format - try to extract common fields
-                    if hasattr(tool_call, 'get'):
+                    if hasattr(tool_call, "get"):
                         # Dictionary format
                         formatted_call = {
                             "id": tool_call.get("id", ""),
-                            "function": tool_call.get("function", tool_call.get("name", "")),
-                            "arguments": tool_call.get("arguments", tool_call.get("input", {})),
-                            "type": "function"
+                            "function": tool_call.get(
+                                "function", tool_call.get("name", "")
+                            ),
+                            "arguments": tool_call.get(
+                                "arguments", tool_call.get("input", {})
+                            ),
+                            "type": "function",
                         }
                     else:
                         # Object format
                         formatted_call = {
                             "id": getattr(tool_call, "id", ""),
-                            "function": getattr(tool_call, "function", getattr(tool_call, "name", "")),
-                            "arguments": getattr(tool_call, "arguments", getattr(tool_call, "input", {})),
-                            "type": "function"
+                            "function": getattr(
+                                tool_call, "function", getattr(tool_call, "name", "")
+                            ),
+                            "arguments": getattr(
+                                tool_call, "arguments", getattr(tool_call, "input", {})
+                            ),
+                            "type": "function",
                         }
-                
+
                 formatted_calls.append(formatted_call)
-                
+
             except Exception as e:
                 logger.error(f"Error formatting tool call: {e}")
                 # Add a fallback formatted call
-                formatted_calls.append({
-                    "id": f"error_{len(formatted_calls)}",
-                    "function": "unknown",
-                    "arguments": {},
-                    "type": "function",
-                    "error": str(e)
-                })
-        
+                formatted_calls.append(
+                    {
+                        "id": f"error_{len(formatted_calls)}",
+                        "function": "unknown",
+                        "arguments": {},
+                        "type": "function",
+                        "error": str(e),
+                    }
+                )
+
         return formatted_calls
 
-    def _call_tool_sequential(self, toolkit_id: str, formatted_calls: list, provider: str, auth_token: str, user_prompt: str, timeout: int) -> list:
+    def _call_tool_sequential(
+        self,
+        toolkit_id: str,
+        formatted_calls: list,
+        provider: str,
+        auth_token: str,
+        user_prompt: str,
+        timeout: int,
+    ) -> list:
         """Execute tool calls one by one sequentially."""
         results = []
-        
+
         for i, tool_call in enumerate(formatted_calls):
-            logger.info(f"Executing tool call {i+1}/{len(formatted_calls)}: {tool_call.get('function', 'unknown')}")
-            
+            logger.info(
+                f"Executing tool call {i+1}/{len(formatted_calls)}: {tool_call.get('function', 'unknown')}"
+            )
+
             try:
                 if self.protocol in ["ws", "wss"]:
-                    result = self._call_tool_ws(toolkit_id, [tool_call], provider, auth_token, user_prompt, timeout)
+                    result = self._call_tool_ws(
+                        toolkit_id,
+                        [tool_call],
+                        provider,
+                        auth_token,
+                        user_prompt,
+                        timeout,
+                    )
                 elif self.protocol in ["http", "https"]:
-                    result = self._call_tool_http(toolkit_id, [tool_call], provider, auth_token, user_prompt, timeout)
-                
+                    result = self._call_tool_http(
+                        toolkit_id,
+                        [tool_call],
+                        provider,
+                        auth_token,
+                        user_prompt,
+                        timeout,
+                    )
+
                 if result and isinstance(result, list):
                     results.extend(result)
                     logger.info(f"Tool call {i+1} completed successfully")
@@ -1068,40 +1248,54 @@ class LLMClient:
                     results.append(result)
                     logger.info(f"Tool call {i+1} completed successfully")
                 else:
-                    results.append({
-                        "tool_call_id": tool_call.get("id", f"call_{i}"),
-                        "result": {"error": "No result returned"}
-                    })
-                    
+                    results.append(
+                        {
+                            "tool_call_id": tool_call.get("id", f"call_{i}"),
+                            "result": {"error": "No result returned"},
+                        }
+                    )
+
             except Exception as e:
                 logger.error(f"Error executing tool call {i+1}: {e}")
-                results.append({
-                    "tool_call_id": tool_call.get("id", f"call_{i}"),
-                    "result": {"error": str(e)}
-                })
-        
+                results.append(
+                    {
+                        "tool_call_id": tool_call.get("id", f"call_{i}"),
+                        "result": {"error": str(e)},
+                    }
+                )
+
         return results
 
-    def _call_tool_ws(self, toolkit_id: str, formatted_calls: list, provider: str, auth_token: str, user_prompt: str, timeout: int) -> list:
+    def _call_tool_ws(
+        self,
+        toolkit_id: str,
+        formatted_calls: list,
+        provider: str,
+        auth_token: str,
+        user_prompt: str,
+        timeout: int,
+    ) -> list:
         """Execute tool calls using WebSocket."""
         self._connect()
         if not self.authenticated:
             raise WebSocketException("WebSocket not authenticated.")
-        
+
         results = []
-        
+
         for i, tool_call in enumerate(formatted_calls):
             request_id = f"task_{toolkit_id}_{i}_{str(uuid.uuid4())}"
-            message = json.dumps({
-                "type": "task_request",
-                "toolkit_id": toolkit_id,
-                "request_id": request_id,
-                "payload": tool_call,
-                "provider": provider,
-                "auth_token": auth_token,
-                "user_prompt": user_prompt,
-            })
-            
+            message = json.dumps(
+                {
+                    "type": "task_request",
+                    "toolkit_id": toolkit_id,
+                    "request_id": request_id,
+                    "payload": tool_call,
+                    "provider": provider,
+                    "auth_token": auth_token,
+                    "user_prompt": user_prompt,
+                }
+            )
+
             try:
                 with self.lock:
                     if not self.ws or not self.ws.sock or not self.ws.sock.connected:
@@ -1110,26 +1304,33 @@ class LLMClient:
             except Exception as e:
                 logger.error(f"Error sending task_request message: {e}")
                 raise WebSocketException(f"Failed to send request: {e}")
-            
+
             # Wait for response
             start_time = time.time()
             while request_id not in self.response_data:
                 if time.time() - start_time > timeout:
                     raise TimeoutError(f"Timed out waiting for task response {i+1}.")
                 time.sleep(0.1)
-            
+
             response = self.response_data.pop(request_id)
-            results.append({
-                "tool_call_id": tool_call.get("id", f"call_{i}"),
-                "result": response
-            })
-        
+            results.append(
+                {"tool_call_id": tool_call.get("id", f"call_{i}"), "result": response}
+            )
+
         return results
 
-    def _call_tool_http(self, toolkit_id: str, formatted_calls: list, provider: str, auth_token: str, user_prompt: str, timeout: int) -> list:
+    def _call_tool_http(
+        self,
+        toolkit_id: str,
+        formatted_calls: list,
+        provider: str,
+        auth_token: str,
+        user_prompt: str,
+        timeout: int,
+    ) -> list:
         """Execute tool calls using HTTP."""
         results = []
-        
+
         for i, tool_call in enumerate(formatted_calls):
             payload = {
                 "type": "task_request",
@@ -1140,24 +1341,35 @@ class LLMClient:
                 "auth_token": auth_token,
                 "user_prompt": user_prompt,
             }
-            
+
             try:
                 response = self._http_request("process", payload)
-                results.append({
-                    "tool_call_id": tool_call.get("id", f"call_{i}"),
-                    "result": response
-                })
+                results.append(
+                    {
+                        "tool_call_id": tool_call.get("id", f"call_{i}"),
+                        "result": response,
+                    }
+                )
             except Exception as e:
                 logger.error(f"Error executing tool call {i+1}: {e}")
-                results.append({
-                    "tool_call_id": tool_call.get("id", f"call_{i}"),
-                    "result": {"error": str(e)}
-                })
-        
-        return results
-    
+                results.append(
+                    {
+                        "tool_call_id": tool_call.get("id", f"call_{i}"),
+                        "result": {"error": str(e)},
+                    }
+                )
 
-    def call_tool_streaming(self, toolkit_id: str, tool_calls: list, provider: str = "openai", auth_token: str = None, user_prompt: str = None, timeout: int = 120):
+        return results
+
+    def call_tool_streaming(
+        self,
+        toolkit_id: str,
+        tool_calls: list,
+        provider: str = "openai",
+        auth_token: str = None,
+        user_prompt: str = None,
+        timeout: int = 120,
+    ):
         """
         Execute tool calls and stream the response from the backend (SSE).
         Returns a generator yielding each SSE event as a dict.
@@ -1194,9 +1406,13 @@ class LLMClient:
         """
         Internal: Make an HTTP POST request and yield SSE events as dicts.
         """
-        with requests.post(url, json=payload, headers=headers, stream=True, timeout=timeout) as resp:
+        with requests.post(
+            url, json=payload, headers=headers, stream=True, timeout=timeout
+        ) as resp:
             if resp.status_code != 200:
-                raise Exception(f"Streaming request failed: {resp.status_code} {resp.text}")
+                raise Exception(
+                    f"Streaming request failed: {resp.status_code} {resp.text}"
+                )
 
             # Parse SSE events
             for line in resp.iter_lines():
@@ -1204,7 +1420,7 @@ class LLMClient:
                     try:
                         # SSE lines start with "data: "
                         if line.startswith(b"data: "):
-                            data = line[len(b"data: "):]
+                            data = line[len(b"data: ") :]
                             event = json.loads(data.decode("utf-8"))
                             yield event
                     except Exception as e:
