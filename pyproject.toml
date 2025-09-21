@@ -76,7 +76,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["atp_sdk*", "atp_sdk.*"]
+include = ["atp_sdk*", "atp_sdk.*", "atp_sdk", "django_atp*", "django_atp.*", "django_atp", "fastapi_atp*", "fastapi_atp.*", "fastapi_atp", "flask_atp*", "flask_atp.*", "flask_atp"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
