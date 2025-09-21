@@ -8,9 +8,7 @@ import hashlib
 import uuid
 # import rel
 import requests
-import websocket # websocket client package(websocket-client)
-# import websockets # websocket client and server package(websockets)
-# from websockets.exceptions import ConnectionClosed
+import websocket
 import json
 import logging
 import time
@@ -93,7 +91,7 @@ class ToolKitClient:
         base_url (str): Backend server URL.
         registered_tools (dict): Registered tool metadata.
     """
-    def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com" , auto_restart=True, protocol="wss", idle_timeout=300):
+    def __init__(self, api_key, app_name, base_url="https://chatatp-backend.onrender.com", endpoint_url=None, auto_restart=True, protocol="http", idle_timeout=300):
         """
         Initialize the ToolKitClient.
 
@@ -101,8 +99,9 @@ class ToolKitClient:
             api_key (str): Your ATP Toolkit API key.
             app_name (str): Name of your application.
             base_url (str, optional): Backend server URL of the ATP Server. Defaults to chatatp-backend.onrender.com.
+            endpoint_url (str, optional): Endpoint URL where the toolkit is deployed and ready to get requests.
             auto_restart (bool, optional): Whether to auto-restart on code changes. Defaults to True.
-            protocol (str, optional): Connection protocol, either "ws" or "https". Defaults to "wss".
+            protocol (str, optional): Connection protocol, either "ws(s)" or "http(s)". Defaults to "https" use wss for development and http for production.
             idle_timeout (int, optional): Idle timeout in seconds before disconnecting. Defaults to 300 seconds (5 minutes).
         """
         self.idle_timeout = idle_timeout  # Default: 300 seconds (5 minutes)
@@ -111,6 +110,7 @@ class ToolKitClient:
         self.api_key = api_key
         self.app_name = app_name
         self.base_url = base_url.rstrip("/")
+        self.endpoint_url = endpoint_url  # <-- Add this
         self.registered_tools = {}
         self.exchange_tokens = {}
         self.lock = threading.Lock()
@@ -272,7 +272,6 @@ class ToolKitClient:
         url = f"{self.base_url}/api/v1/register_tool"
         headers = {
             "Content-Type": "application/json",
-            # "Authorization": f"Bearer {self.api_key}"
         }
 
         resp = requests.post(url, json=payload, headers=headers)
@@ -328,7 +327,6 @@ class ToolKitClient:
         url = f"{self.base_url}/api/v1/execute_function"
         headers = {
             "Content-Type": "application/json",
-            # "Authorization": f"Bearer {self.api_key}"
         }
 
         try:
@@ -425,6 +423,112 @@ class ToolKitClient:
                 break
             time.sleep(10)  # Check every 10 seconds
 
+    import requests
+
+    def _send_tool_result_http(self, request_id, result):
+        """
+        Send tool execution result to toolkit's endpoint_url.
+        """
+        if not self.endpoint_url:
+            raise ValueError("No endpoint_url configured for HTTP mode.")
+        payload = {
+            "request_id": request_id,
+            "result": result
+        }
+        resp = requests.post(self.endpoint_url, json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _send_tool_result_inbox(self, request_id, result):
+        """
+        Send tool execution result to ATP server inbox endpoint.
+        """
+        url = f"{self.base_url}/api/v1/toolkit/{self.api_key}/inbox/respond"
+        payload = {
+            "request_id": request_id,
+            "response": result
+        }
+        logger.info(f"Sending result to inbox: request_id={request_id}, result={result}")
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+            logger.info(f"Inbox response: status={resp.status_code}, content={resp.text}")
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Error sending result to inbox: {e}")
+            raise
+
+    def poll_inbox_for_requests(self):
+        """
+        Poll the ATP server for pending tool requests.
+        """
+        url = f"{self.base_url}/api/v1/toolkit/{self.api_key}/inbox"
+        logger.info(f"Polling inbox at {url}")
+        try:
+            resp = requests.get(url, timeout=30)
+            logger.info(f"Inbox poll response: status={resp.status_code}, content={resp.text}")
+            if resp.status_code == 200:
+                try:
+                    response_data = resp.json()
+                    if response_data:
+                        logger.info(f"Received inbox request: {json.dumps(response_data, indent=2)}")
+                        return response_data
+                    else:
+                        logger.debug("Inbox is empty")
+                        return None
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse inbox response JSON: {e}, response={resp.text}")
+                    return None
+            else:
+                logger.warning(f"Inbox poll failed: status={resp.status_code}, response={resp.text}")
+                return None
+        except requests.RequestException as e:
+            logger.error(f"Error polling inbox: {e}")
+            return None
+
+    def _poll_inbox_loop(self):
+        """
+        Poll the ATP server for pending tool requests (Inbox Mode).
+        """
+        logger.info("Starting inbox polling loop")
+        while self.running:
+            try:
+                req = self.poll_inbox_for_requests()
+                if req:
+                    request_id = req.get("request_id")
+                    tool_name = req.get("tool_name")
+                    params = req.get("params", {})
+                    auth_token = req.get("auth_token")
+                    logger.info(f"Processing inbox request: request_id={request_id}, tool_name={tool_name}, params={params}, auth_token={'<hidden>' if auth_token else None}")
+
+                    if tool_name in self.registered_tools:
+                        logger.info(f"Found registered tool: {tool_name}")
+                        func = self.registered_tools[tool_name]["function"]
+                        sig = inspect.signature(func)
+                        try:
+                            call_params = params.copy()
+                            if auth_token and ("auth_token" in sig.parameters or any(
+                                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())):
+                                call_params["auth_token"] = auth_token
+                                logger.debug(f"Added auth_token to call parameters for {tool_name}")
+                            logger.info(f"Executing tool {tool_name} with params: {call_params}")
+                            result = func(**call_params)
+                            logger.info(f"Tool {tool_name} executed successfully, result: {result}")
+                            self._send_tool_result_inbox(request_id, result)
+                            logger.info(f"Sent result for request_id={request_id} to inbox")
+                        except Exception as e:
+                            logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                            error_result = {"error": str(e)}
+                            self._send_tool_result_inbox(request_id, error_result)
+                    else:
+                        logger.warning(f"Tool {tool_name} not found in registered tools")
+                else:
+                    logger.debug("No pending requests in inbox")
+                time.sleep(30)  # Poll every 30 seconds
+            except Exception as e:
+                logger.error(f"Inbox polling loop error: {e}", exc_info=True)
+                time.sleep(30)  # Wait 30 seconds after an error
+
     def start(self):
         """
         Start the WebSocket client and listen for tool requests.
@@ -438,36 +542,95 @@ class ToolKitClient:
         if self.file_watcher:
             self.file_watcher.start()
 
-        def run_ws():
-            if self.base_url.startswith("https://"):
-                ws_url = self.base_url.replace("https://", "wss://")
-            elif self.base_url.startswith("http://"):
-                ws_url = self.base_url.replace("http://", "ws://")
-            url = f"{ws_url}/ws/v1/atp/toolkit-client/{self.api_key}/"
-            while True:
-                try:
-                    logger.info(f"Connecting to: {url}")
-                    self.ws = websocket.WebSocketApp(
-                        url,
-                        on_open=lambda ws: logger.info("WebSocket connection established."),
-                        on_message=self.on_message,
-                        on_error=on_error,
-                        on_close=on_close
-                    )
-                    self.ws.run_forever(ping_interval=30)
-                    logger.warning("WebSocket disconnected. Reconnecting in 5 seconds...")
-                except Exception as e:
-                    logger.exception("Exception in WebSocket thread")
+        if self.protocol.startswith("http"):
+            # thread = threading.Thread(target=self._run_http_loop, daemon=True)
+            thread = threading.Thread(target=self._poll_inbox_loop, daemon=True)
+        else:
+            thread = threading.Thread(target=self._run_ws_loop, daemon=True)
 
-                    time.sleep(5)  # delay before trying again
-
-        thread = threading.Thread(target=run_ws)
-        thread.daemon = True
         thread.start()
-
+        self.ws_thread = thread
         self.run_forever()
 
-        logger.info("WebSocket thread started.")
+
+    def _run_ws_loop(self):
+        if self.base_url.startswith("https://"):
+            ws_url = self.base_url.replace("https://", "wss://")
+        elif self.base_url.startswith("http://"):
+            ws_url = self.base_url.replace("http://", "ws://")
+        url = f"{ws_url}/ws/v1/atp/toolkit-client/{self.api_key}/"
+        while True:
+            try:
+                logger.info(f"Connecting to: {url}")
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=lambda ws: logger.info("WebSocket connection established."),
+                    on_message=self.on_message,
+                    on_error=on_error,
+                    on_close=on_close
+                )
+                self.ws.run_forever(ping_interval=30)
+                logger.warning("WebSocket disconnected. Reconnecting in 5 seconds...")
+            except Exception as e:
+                logger.exception("Exception in WebSocket thread")
+
+                time.sleep(5)  # delay before trying again
+
+    def _run_http_loop(self):
+        """Poll the ATP server for incoming tool requests over HTTP."""
+        url = f"{self.base_url}/api/v1/atp/toolkit-client/{self.api_key}/messages/"
+        logger.info(f"Starting HTTP polling loop: {url}")
+
+        while self.running:
+            try:
+                resp = requests.get(url, timeout=60)  # long-poll up to 60s
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data:
+                        # simulate on_message handling
+                        self._handle_http_message(data)
+                else:
+                    logger.warning(f"Polling failed: {resp.status_code} - {resp.text}")
+                    time.sleep(5)
+            except Exception as e:
+                logger.error(f"HTTP polling error: {e}")
+                time.sleep(5)
+
+    def _handle_http_message(self, data):
+        """Handle a message payload from HTTP polling."""
+        try:
+            message_type = data.get("message_type")
+            if message_type == "atp_tool_request":
+                payload = data["payload"]
+                request_id = payload.get("request_id")
+                tool_name = payload.get("tool_name")
+                params = payload.get("params", {})
+                auth_token = payload.get("auth_token")
+
+                if tool_name in self.registered_tools:
+                    tool_data = self.registered_tools[tool_name]
+                    func = tool_data["function"]
+                    sig = inspect.signature(func)
+
+                    try:
+                        call_params = params.copy()
+                        if auth_token and ("auth_token" in sig.parameters or any(
+                                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())):
+                            call_params["auth_token"] = auth_token
+
+                        result = func(**call_params)
+                        self._report_execution(tool_name, result)
+
+                    except Exception as e:
+                        error_result = {"error": str(e)}
+                        self._report_execution(tool_name, error_result)
+                else:
+                    logger.warning(f"Unknown tool requested: {tool_name}")
+            else:
+                logger.info(f"Unknown HTTP message type: {message_type}")
+        except Exception as e:
+            logger.error(f"Error handling HTTP message: {e}")
+
 
 
     def run_forever(self):
@@ -513,39 +676,48 @@ class HTTPException(Exception):
 
 class LLMClient:
     """
-    LLMClient manages both WebSocket and HTTP/HTTPS connections to the ChatATP Agent Server
-    for toolkit context retrieval and tool execution.
+    LLMClient manages connections to the ATP Agent Server for toolkit context retrieval
+    and remote tool execution. Supports both WebSocket and HTTP protocols.
+    
+    This client is designed to work seamlessly with popular LLM providers like OpenAI,
+    Anthropic, and Mistral by handling tool call formatting automatically.
     """
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/",
-        protocol: str = "ws",
+        protocol: str = "https",
+        base_url: str = "https://chatatp-backend.onrender.com",
         idle_timeout: int = 300,
     ):
         """
         Initialize the LLMClient.
+        
         Args:
-            api_key (str): ChatATP API key for authentication.
-            base_url (str, optional): ATP server URL. Defaults to "https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/".
-            protocol (str, optional): Protocol to use ("ws" or "http"). Defaults to "ws".
-            idle_timeout (int, optional): Idle timeout in seconds. Defaults to 300.
+            api_key (str): ATP API key for authentication.
+            protocol (str): Connection protocol. Options: "ws", "wss", "http", "https". 
+                          Defaults to "https".
+            base_url (str): Server URL. Defaults to "https://chatatp-backend.onrender.com".
+            idle_timeout (int): Idle timeout in seconds. Defaults to 300.
         """
+        self.api_key = api_key
+        self.protocol = protocol.lower()
+        self.base_url = base_url.rstrip("/")
         self.idle_timeout = idle_timeout
         self.last_activity_time = time.time()
-        self.protocol = protocol.lower()
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        
+        # Connection management
         self.ws = None
         self.lock = threading.Lock()
         self.response_data = {}
         self.authenticated = False
+        
+        # Initialize based on protocol
         if self.protocol in ["ws", "wss"]:
             self._init_websocket()
         elif self.protocol in ["http", "https"]:
             self._init_http()
         else:
-            raise ValueError("Unsupported protocol. Use 'ws' or 'http'.")
+            raise ValueError("Unsupported protocol. Use 'ws', 'wss', 'http', or 'https'.")
 
     def _init_websocket(self):
         """Initialize WebSocket-specific attributes."""
@@ -638,39 +810,39 @@ class LLMClient:
     def _http_request(self, endpoint: str, payload: dict, method: str = "POST", stream: bool = False):
         """Make an HTTP request to the server."""
         url = f"https://chatatp-backend.onrender.com/api/v1/atp/llm-client/process/"
-        headers = {"Content-Type": "application/json", "Authorization": f"Token 1181c154c457df418d48fc01f56d19771b95b620"}
         # if not stream:
-        resp = requests.post(url, json=payload, headers=headers)
+        # resp = requests.post(url, json=payload, headers=headers)
+        resp = requests.post(url, json=payload)
         resp.raise_for_status()
         return resp.json()
 
-    def get_toolkit_context(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
+    def get_toolkit_context(self, toolkit_id: str, user_prompt: str, provider: str = "openai") -> dict:
         """
         Retrieve the execution context for a toolkit from the server.
 
-        The context combines provider-specific schema details (e.g., OpenAI, Anthropic) 
-        with the given user prompt, ensuring the request aligns with the provider’s 
-        tool/function call format. The request is routed via WebSocket or HTTP depending 
-        on the client protocol.
+        The context combines provider-specific schema details (e.g., OpenAI, Anthropic, Mistral) 
+        with the given user prompt, ensuring the request aligns with the provider's 
+        tool/function call format.
 
         Args:
             toolkit_id (str): Unique ID/name of the toolkit to retrieve context for.
-            provider (str): The LLM provider whose tool/function call schema should be used e.g., "openai", "anthropic", "mistral".
-            user_prompt (str): The user’s input to append to the toolkit context.
+            user_prompt (str): The user's input to append to the toolkit context.
+            provider (str): The LLM provider whose tool/function call schema should be used.
+                          Options: "openai", "anthropic", "mistralai", "mistral". Defaults to "openai".
 
         Returns:
-            str: Combined toolkit context ready for provider-compatible execution.
+            dict: Toolkit context containing tools and system instructions ready for the provider.
 
         Raises:
             WebSocketException: If the connection fails or authentication is invalid.
             ValueError: If the server returns an invalid response.
         """
         if self.protocol in ["ws", "wss"]:
-            return self._get_toolkit_context_ws(toolkit_id, provider, user_prompt)
+            return self._get_toolkit_context_ws(toolkit_id, user_prompt, provider)
         elif self.protocol in ["http", "https"]:
-            return self._get_toolkit_context_http(toolkit_id, provider, user_prompt)
+            return self._get_toolkit_context_http(toolkit_id, user_prompt, provider)
 
-    def _get_toolkit_context_ws(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
+    def _get_toolkit_context_ws(self, toolkit_id: str, user_prompt: str, provider: str) -> dict:
         """Retrieve toolkit context using WebSocket."""
         self._connect()
         if not self.authenticated:
@@ -689,7 +861,7 @@ class LLMClient:
                     raise WebSocketException("WebSocket connection is closed.")
                 self.ws.send(message)
         except Exception as e:
-            print(f"Error sending get_toolkit_context message: {e}")
+            logger.error(f"Error sending get_toolkit_context message: {e}")
             raise WebSocketException(f"Failed to send request: {e}")
         # Wait for response
         timeout = 30
@@ -700,7 +872,7 @@ class LLMClient:
             time.sleep(0.1)
         return self.response_data.pop(request_id)
 
-    def _get_toolkit_context_http(self, toolkit_id: str, provider: str, user_prompt: str) -> dict:
+    def _get_toolkit_context_http(self, toolkit_id: str, user_prompt: str, provider: str) -> dict:
         """Retrieve toolkit context using HTTP."""
         payload = {
             "type": "get_toolkit_context",
@@ -712,92 +884,328 @@ class LLMClient:
         response = self._http_request("process", payload, stream=False)
         return response.get("payload", {})
 
-    def call_tool(self, toolkit_id: str, json_response: str, provider: str = None, auth_token: str = None, user_prompt: str = None, timeout: int = 120) -> Union[str, dict]:
+    def call_tool(self, toolkit_id: str, tool_calls: list, provider: str = "openai", auth_token: str = None, user_prompt: str = None, timeout: int = 120, sequential: bool = False) -> list:
         """
-        Execute a tool or workflow on the server.
+        Execute tool calls from LLM providers on the server.
 
-        Accepts a JSON-formatted tool call response from an LLM and dispatches it 
-        to the appropriate toolkit. Since each provider may define its own schema 
-        for tool/function calls, the provider parameter ensures correct interpretation.
-        The request is executed via WebSocket or HTTP depending on the client protocol.
+        This method accepts tool call objects directly from LLM providers (OpenAI, Anthropic, Mistral)
+        and executes them remotely. The tool calls are automatically formatted for the backend server.
 
         Args:
             toolkit_id (str): Unique ID/name/identifier of the toolkit instance to execute.
-            json_response (str): JSON payload from an LLM containing the tool call.
-            provider (str, optional): The LLM provider (e.g., OpenAI, Anthropic) whose 
-                tool/function call schema the json_response follows.
+            tool_calls (list): List of tool call objects from LLM response.
+            provider (str): The LLM provider. Options: "openai", "anthropic", "mistralai", "mistral". 
+                          Defaults to "openai".
             auth_token (str, optional): Authentication token for the request.
             user_prompt (str, optional): Additional user input to include in the execution.
             timeout (int, optional): Timeout in seconds. Default is 120.
+            sequential (bool, optional): If True, execute tool calls one by one. If False, execute in parallel. Default is False.
 
         Returns:
-            Union[str, dict]: The server’s response, either raw or structured.
+            list: List of tool execution results with tool_call_id and result.
 
         Raises:
             WebSocketException: If the connection fails or authentication is invalid.
             ValueError: If the server returns an invalid response type.
-            json.JSONDecodeError: If the provided json_response is malformed.
         """
-        if self.protocol in ["ws", "wss"]:
-            return self._call_tool_ws(toolkit_id, json_response, provider, auth_token, user_prompt, timeout)
-        elif self.protocol in ["http", "https"]:
-            return self._call_tool_http(toolkit_id, json_response, provider, auth_token, user_prompt, timeout)
+        if not tool_calls:
+            logger.warning("No tool calls provided")
+            return []
+            
+        # Format tool calls for the backend
+        formatted_calls = self._format_tool_calls(tool_calls, provider)
+        
+        if sequential:
+            # Execute tool calls one by one
+            return self._call_tool_sequential(toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout)
+        else:
+            # Execute tool calls in parallel (default behavior)
+            if self.protocol in ["ws", "wss"]:
+                return self._call_tool_ws(toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout)
+            elif self.protocol in ["http", "https"]:
+                return self._call_tool_http(toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout)
 
-    def _call_tool_ws(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int) -> dict:
-        """Execute a tool using WebSocket."""
+    def _format_tool_calls(self, tool_calls: list, provider: str) -> list:
+        """
+        Format tool calls from different providers to a consistent format for the backend.
+        
+        Args:
+            tool_calls (list): Raw tool calls from LLM provider
+            provider (str): Provider name
+            
+        Returns:
+            list: Formatted tool calls for backend
+        """
+        formatted_calls = []
+        
+        for tool_call in tool_calls:
+            try:
+                if provider in ["openai"]:
+                    # OpenAI format: {id, function: {name, arguments}}
+                    if hasattr(tool_call, 'get'):
+                        # Dictionary format
+                        formatted_call = {
+                            "id": tool_call.get("id", ""),
+                            "function": tool_call.get("function", {}).get("name", ""),
+                            "arguments": tool_call.get("function", {}).get("arguments", {}),
+                            "type": "function"
+                        }
+                    else:
+                        # Object format
+                        formatted_call = {
+                            "id": getattr(tool_call, "id", ""),
+                            "function": getattr(tool_call.function, "name", "") if hasattr(tool_call, "function") else "",
+                            "arguments": getattr(tool_call.function, "arguments", {}) if hasattr(tool_call, "function") else {},
+                            "type": "function"
+                        }
+                        
+                elif provider in ["anthropic"]:
+                    # Anthropic format: {id, name, input}
+                    if hasattr(tool_call, 'get'):
+                        # Dictionary format
+                        formatted_call = {
+                            "id": tool_call.get("id", ""),
+                            "function": tool_call.get("name", ""),
+                            "arguments": tool_call.get("input", {}),
+                            "type": "function"
+                        }
+                    else:
+                        # Object format
+                        formatted_call = {
+                            "id": getattr(tool_call, "id", ""),
+                            "function": getattr(tool_call, "name", ""),
+                            "arguments": getattr(tool_call, "input", {}),
+                            "type": "function"
+                        }
+                        
+                elif provider in ["mistralai", "mistral"]:
+                    # Mistral format: ToolCall object with function, id, type, index
+                    if hasattr(tool_call, 'get'):
+                        # Dictionary format
+                        formatted_call = {
+                            "id": tool_call.get("id", ""),
+                            "function": tool_call.get("name", ""),
+                            "arguments": tool_call.get("arguments", {}),
+                            "type": "function"
+                        }
+                    else:
+                        # Mistral ToolCall object format
+                        function_name = ""
+                        arguments = {}
+                        
+                        if hasattr(tool_call, "function"):
+                            function_name = getattr(tool_call.function, "name", "")
+                            # Parse arguments if it's a string
+                            args_str = getattr(tool_call.function, "arguments", "{}")
+                            if isinstance(args_str, str):
+                                try:
+                                    arguments = json.loads(args_str)
+                                except json.JSONDecodeError as e:
+                                    logger.warning(f"Failed to parse Mistral arguments '{args_str}': {e}")
+                                    arguments = {}
+                            else:
+                                arguments = args_str
+                        
+                        formatted_call = {
+                            "id": getattr(tool_call, "id", ""),
+                            "function": function_name,
+                            "arguments": arguments,
+                            "type": "function"
+                        }
+                        
+                else:
+                    # Generic format - try to extract common fields
+                    if hasattr(tool_call, 'get'):
+                        # Dictionary format
+                        formatted_call = {
+                            "id": tool_call.get("id", ""),
+                            "function": tool_call.get("function", tool_call.get("name", "")),
+                            "arguments": tool_call.get("arguments", tool_call.get("input", {})),
+                            "type": "function"
+                        }
+                    else:
+                        # Object format
+                        formatted_call = {
+                            "id": getattr(tool_call, "id", ""),
+                            "function": getattr(tool_call, "function", getattr(tool_call, "name", "")),
+                            "arguments": getattr(tool_call, "arguments", getattr(tool_call, "input", {})),
+                            "type": "function"
+                        }
+                
+                formatted_calls.append(formatted_call)
+                
+            except Exception as e:
+                logger.error(f"Error formatting tool call: {e}")
+                # Add a fallback formatted call
+                formatted_calls.append({
+                    "id": f"error_{len(formatted_calls)}",
+                    "function": "unknown",
+                    "arguments": {},
+                    "type": "function",
+                    "error": str(e)
+                })
+        
+        return formatted_calls
+
+    def _call_tool_sequential(self, toolkit_id: str, formatted_calls: list, provider: str, auth_token: str, user_prompt: str, timeout: int) -> list:
+        """Execute tool calls one by one sequentially."""
+        results = []
+        
+        for i, tool_call in enumerate(formatted_calls):
+            logger.info(f"Executing tool call {i+1}/{len(formatted_calls)}: {tool_call.get('function', 'unknown')}")
+            
+            try:
+                if self.protocol in ["ws", "wss"]:
+                    result = self._call_tool_ws(toolkit_id, [tool_call], provider, auth_token, user_prompt, timeout)
+                elif self.protocol in ["http", "https"]:
+                    result = self._call_tool_http(toolkit_id, [tool_call], provider, auth_token, user_prompt, timeout)
+                
+                if result and isinstance(result, list):
+                    results.extend(result)
+                    logger.info(f"Tool call {i+1} completed successfully")
+                elif result:
+                    # Handle single result
+                    results.append(result)
+                    logger.info(f"Tool call {i+1} completed successfully")
+                else:
+                    results.append({
+                        "tool_call_id": tool_call.get("id", f"call_{i}"),
+                        "result": {"error": "No result returned"}
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Error executing tool call {i+1}: {e}")
+                results.append({
+                    "tool_call_id": tool_call.get("id", f"call_{i}"),
+                    "result": {"error": str(e)}
+                })
+        
+        return results
+
+    def _call_tool_ws(self, toolkit_id: str, formatted_calls: list, provider: str, auth_token: str, user_prompt: str, timeout: int) -> list:
+        """Execute tool calls using WebSocket."""
         self._connect()
-        request_id = f"task_{toolkit_id}_{str(uuid.uuid4())}"
-        try:
-            cleaned_json = self._clean_json_string(json_response)
-            final_json = json.loads(cleaned_json)
-        except json.JSONDecodeError as e:
-            raise json.JSONDecodeError(f"Invalid JSON response: {e}", e.doc, e.pos)
-        message = json.dumps({
-            "type": "task_request",
-            "toolkit_id": toolkit_id,
-            "request_id": request_id,
-            "payload": final_json,
-            "provider": provider,
-            "auth_token": auth_token,
-            "user_prompt": user_prompt,
-        })
-        try:
-            with self.lock:
-                if not self.ws or not self.ws.sock or not self.ws.sock.connected:
-                    raise WebSocketException("WebSocket connection is closed.")
-                self.ws.send(message)
-        except Exception as e:
-            print(f"Error sending task_request message: {e}")
-            raise WebSocketException(f"Failed to send request: {e}")
-        # Wait for response
-        start_time = time.time()
-        while request_id not in self.response_data:
-            if time.time() - start_time > timeout:
-                raise TimeoutError("Timed out waiting for task response.")
-            time.sleep(0.1)
-        return self.response_data.pop(request_id)
+        if not self.authenticated:
+            raise WebSocketException("WebSocket not authenticated.")
+        
+        results = []
+        
+        for i, tool_call in enumerate(formatted_calls):
+            request_id = f"task_{toolkit_id}_{i}_{str(uuid.uuid4())}"
+            message = json.dumps({
+                "type": "task_request",
+                "toolkit_id": toolkit_id,
+                "request_id": request_id,
+                "payload": tool_call,
+                "provider": provider,
+                "auth_token": auth_token,
+                "user_prompt": user_prompt,
+            })
+            
+            try:
+                with self.lock:
+                    if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+                        raise WebSocketException("WebSocket connection is closed.")
+                    self.ws.send(message)
+            except Exception as e:
+                logger.error(f"Error sending task_request message: {e}")
+                raise WebSocketException(f"Failed to send request: {e}")
+            
+            # Wait for response
+            start_time = time.time()
+            while request_id not in self.response_data:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Timed out waiting for task response {i+1}.")
+                time.sleep(0.1)
+            
+            response = self.response_data.pop(request_id)
+            results.append({
+                "tool_call_id": tool_call.get("id", f"call_{i}"),
+                "result": response
+            })
+        
+        return results
 
-    def _call_tool_http(self, toolkit_id: str, json_response: str, provider: str, auth_token: str, user_prompt: str, timeout: int) -> dict:
-        """Execute a tool using HTTP."""
+    def _call_tool_http(self, toolkit_id: str, formatted_calls: list, provider: str, auth_token: str, user_prompt: str, timeout: int) -> list:
+        """Execute tool calls using HTTP."""
+        results = []
+        
+        for i, tool_call in enumerate(formatted_calls):
+            payload = {
+                "type": "task_request",
+                "toolkit_id": toolkit_id,
+                "request_id": f"task_{toolkit_id}_{i}_{str(uuid.uuid4())}",
+                "payload": tool_call,
+                "provider": provider,
+                "auth_token": auth_token,
+                "user_prompt": user_prompt,
+            }
+            
+            try:
+                response = self._http_request("process", payload)
+                results.append({
+                    "tool_call_id": tool_call.get("id", f"call_{i}"),
+                    "result": response
+                })
+            except Exception as e:
+                logger.error(f"Error executing tool call {i+1}: {e}")
+                results.append({
+                    "tool_call_id": tool_call.get("id", f"call_{i}"),
+                    "result": {"error": str(e)}
+                })
+        
+        return results
+    
+
+    def call_tool_streaming(self, toolkit_id: str, tool_calls: list, provider: str = "openai", auth_token: str = None, user_prompt: str = None, timeout: int = 120):
+        """
+        Execute tool calls and stream the response from the backend (SSE).
+        Returns a generator yielding each SSE event as a dict.
+        """
+        if not tool_calls:
+            logger.warning("No tool calls provided")
+            return
+
+        formatted_calls = self._format_tool_calls(tool_calls, provider)
+        # Only support HTTP streaming for now
+        if self.protocol not in ["http", "https"]:
+            raise ValueError("Streaming only supported for HTTP protocol")
+
+        # Only support one tool call per streaming request
+        tool_call = formatted_calls[0]
         payload = {
             "type": "task_request",
             "toolkit_id": toolkit_id,
-            "request_id": str(uuid.uuid4()),
-            "payload": json.loads(self._clean_json_string(json_response)),
+            "request_id": f"task_{toolkit_id}_{str(uuid.uuid4())}",
+            "payload": tool_call,
             "provider": provider,
             "auth_token": auth_token,
             "user_prompt": user_prompt,
         }
-        return self._http_request("process", payload)
+        url = f"{self.base_url}/api/v1/atp/llm-client/process/"
+        headers = {
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+        }
 
-    @staticmethod
-    def _clean_json_string(json_str: str) -> str:
+        return self._http_stream_request(url, payload, headers, timeout)
+
+    def _http_stream_request(self, url, payload, headers, timeout):
         """
-        Clean a JSON string by removing markdown or extra formatting.
+        Internal: Make an HTTP POST request and yield SSE events as dicts.
         """
-        json_str = json_str.strip()
-        if json_str.startswith("```json"):
-            json_str = json_str[len("```json"):]
-        if json_str.endswith("```"):
-            json_str = json_str[:-len("```")]
-        return json_str.strip()
+        with requests.post(url, json=payload, headers=headers, stream=True, timeout=timeout) as resp:
+            if resp.status_code != 200:
+                raise Exception(f"Streaming request failed: {resp.status_code} {resp.text}")
+
+            # Parse SSE events
+            for line in resp.iter_lines():
+                if line:
+                    try:
+                        # SSE lines start with "data: "
+                        if line.startswith(b"data: "):
+                            data = line[len(b"data: "):]
+                            event = json.loads(data.decode("utf-8"))
+                            yield event
+                    except Exception as e:
+                        logger.warning(f"Failed to parse SSE event: {e}")
