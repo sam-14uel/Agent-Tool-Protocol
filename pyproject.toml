@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AgentToolProtocol"
-version = "0.1.7"  # Updated version
+version = "0.1.8"  # Updated version
 description = "A Python SDK for registering, exposing, and serving your own Python functions as tools via the ATP platform. Supports secure OAuth2 flows, dynamic tool registration, and real-time tool invocation via WebSocket or HTTP."
 readme = "README.md"
 authors = [
