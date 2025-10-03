@@ -315,6 +315,50 @@ print(response)
 
 ---
 
+## OAuth2 Integration & Token Handling
+
+The ATP SDK supports secure OAuth2 flows for tools that require third-party authentication (e.g., HubSpot, Google, Salesforce).
+
+**How it works:**
+- Use `LLMClient.initiate_oauth_connection()` to start the OAuth flow and get an authorization URL for the user.
+- Use `LLMClient.wait_for_connection()` to poll for completion and retrieve the integration ID.
+- Use `LLMClient.get_user_tokens()` to fetch the user's access and refresh tokens for use in tool calls.
+
+**Example:**
+```python
+from atp_sdk.clients import LLMClient
+
+llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
+
+# Step 1: Initiate OAuth connection
+connection = llm_client.initiate_oauth_connection(
+    platform_id="PLATFORM_ID",
+    external_user_id="user@example.com",
+    developer_redirect_url="https://your-app.com/oauth/callback"
+)
+print("Authorize at:", connection["authorization_url"])
+
+# Step 2: Wait for connection
+account = llm_client.wait_for_connection(
+    platform_id="PLATFORM_ID",
+    external_user_id="user@example.com"
+)
+print("Integration ID:", account["integration_id"])
+
+# Step 3: Fetch tokens
+tokens = llm_client.get_user_tokens(
+    platform_id="PLATFORM_ID",
+    external_user_id="user@example.com"
+)
+print("Access token:", tokens["access_token"])
+```
+
+**Note:**  
+- You only need to handle OAuth and fetch tokens; the SDK will automatically inject tokens into tool calls as needed.
+- See the [LLMClient](#class-llmclient) section for more details.
+
+---
+
 ## Request/Response Flow
 
 ### **1. LLM Requests Toolkit Context**

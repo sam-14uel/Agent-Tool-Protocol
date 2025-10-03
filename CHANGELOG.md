@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## **[0.1.9] - 2025-10-03**
+
+### Added
+- **OAuth2 Integration & Token Handling**:  
+  - Introduced `LLMClient.initiate_oauth_connection()` to start OAuth2 flows and generate authorization URLs.  
+  - Added `LLMClient.wait_for_connection()` to poll and retrieve integration IDs after user authorization.  
+  - Added `LLMClient.get_user_tokens()` to securely fetch user access and refresh tokens.  
+  - Tokens are now automatically injected into tool calls, reducing boilerplate for developers.  
+  - Documentation includes usage example for HubSpot, Google, Salesforce, and other third-party tools.
+
+
+
 ## **[0.1.7] - 2025-09-21**
 
 ### Added

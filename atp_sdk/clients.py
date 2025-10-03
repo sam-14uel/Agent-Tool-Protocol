@@ -15,7 +15,7 @@ from websocket import WebSocketException, WebSocketConnectionClosedException
 import os
 import hashlib
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, List, Optional, Set
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -925,6 +925,140 @@ class LLMClient:
         except requests.RequestException as e:
             logger.error(f"HTTP request failed: {e}")
             raise
+
+    def initiate_oauth_connection(self, platform_id: str, external_user_id: str, developer_redirect_url: Optional[str] = None) -> Dict:
+        """
+        Initiate an OAuth connection for a third-party provider.
+
+        Args:
+            platform_id (str): The platform_id of the DeveloperIntegrationPlatform.
+            external_user_id (str): Unique identifier for the user in the developer's system.
+            developer_redirect_url (str, optional): URL to redirect to after OAuth completion.
+
+        Returns:
+            dict: Metadata including confirmation_url, provider_name, provider_logo, developer_app_name,
+                  scopes, auth_mode, powered_by, and authorization_url.
+        """
+        endpoint = f"oauth/confirmation/{platform_id}/"
+        payload = {
+            "external_user_id": external_user_id,
+            "developer_redirect_url": developer_redirect_url
+        } if developer_redirect_url else {"external_user_id": external_user_id}
+        
+        try:
+            response = self._http_request(endpoint, payload, method="POST")
+            return response
+        except requests.RequestException as e:
+            logger.error(f"Failed to initiate OAuth connection: {e}")
+            raise Exception(f"Failed to initiate OAuth connection: {e}")
+
+    def wait_for_connection(self, platform_id: str, external_user_id: str, timeout: int = 300, poll_interval: int = 2) -> Dict:
+        """
+        Poll for a successful OAuth connection.
+
+        Args:
+            platform_id (str): The platform_id of the DeveloperIntegrationPlatform.
+            external_user_id (str): Unique identifier for the user in the developer's system.
+            timeout (int): Maximum time to wait in seconds. Default is 300.
+            poll_interval (int): Seconds between polling attempts. Default is 2.
+
+        Returns:
+            dict: Details of the connected account (integration_id, external_user_id, etc.).
+
+        Raises:
+            TimeoutError: If the connection is not established within the timeout period.
+            Exception: If an error occurs while polling.
+        """
+        start_time = time.time()
+        endpoint = f"oauth/tokens/{platform_id}/{external_user_id}/"
+        
+        while time.time() - start_time < timeout:
+            try:
+                response = self._http_request(endpoint, {}, method="GET")
+                return {
+                    "status": "completed",
+                    "integration_id": response.get("integration_id"),
+                    "external_user_id": response.get("external_user_id"),
+                    "external_user_email": response.get("external_user_email"),
+                    "access_token": response.get("access_token"),
+                    "refresh_token": response.get("refresh_token"),
+                    "expires_at": response.get("expires_at"),
+                    "scope": response.get("scope")
+                }
+            except requests.RequestException as e:
+                if isinstance(e, requests.HTTPError) and e.response.status_code == 404:
+                    # Account not yet connected, continue polling
+                    time.sleep(poll_interval)
+                    continue
+                logger.error(f"Error polling for connection: {e}")
+                raise Exception(f"Error polling for connection: {e}")
+        
+        raise TimeoutError(f"Timed out waiting for OAuth connection for platform {platform_id} and user {external_user_id}")
+
+    def get_user_tokens(self, platform_id: str, external_user_id: str) -> Dict:
+        """
+        Retrieve OAuth tokens for a connected user.
+
+        Args:
+            platform_id (str): The platform_id of the DeveloperIntegrationPlatform.
+            external_user_id (str): Unique identifier for the user in the developer's system.
+
+        Returns:
+            dict: Token details including access_token, refresh_token, expires_at, and scope.
+        """
+        endpoint = f"oauth/tokens/{platform_id}/{external_user_id}/"
+        try:
+            return self._http_request(endpoint, {}, method="GET")
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch user tokens: {e}")
+            raise Exception(f"Failed to fetch user tokens: {e}")
+
+    def register_webhook(self, url: str, events: List[str] = ['connection_success']) -> Dict:
+        """
+        Register a webhook for OAuth connection events.
+
+        Args:
+            url (str): The webhook URL to receive events.
+            events (List[str]): List of event types (e.g., ['connection_success', 'connection_failed']).
+
+        Returns:
+            dict: Webhook details including webhook_id, url, and events.
+        """
+        endpoint = "webhooks/register/"
+        payload = {"url": url, "events": events}
+        try:
+            return self._http_request(endpoint, payload, method="POST")
+        except requests.RequestException as e:
+            logger.error(f"Failed to register webhook: {e}")
+            raise Exception(f"Failed to register webhook: {e}")
+
+    def list_webhooks(self) -> List[Dict]:
+        """
+        List all registered webhooks.
+
+        Returns:
+            List[dict]: List of webhook details.
+        """
+        endpoint = "webhooks/"
+        try:
+            return self._http_request(endpoint, {}, method="GET")
+        except requests.RequestException as e:
+            logger.error(f"Failed to list webhooks: {e}")
+            raise Exception(f"Failed to list webhooks: {e}")
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        """
+        Delete a registered webhook.
+
+        Args:
+            webhook_id (str): The ID of the webhook to delete.
+        """
+        endpoint = f"webhooks/{webhook_id}/delete/"
+        try:
+            self._http_request(endpoint, {}, method="DELETE")
+        except requests.RequestException as e:
+            logger.error(f"Failed to delete webhook: {e}")
+            raise Exception(f"Failed to delete webhook: {e}")
 
     def get_toolkit_context(
         self, toolkit_id: str, user_prompt: str, provider: str = "openai"
