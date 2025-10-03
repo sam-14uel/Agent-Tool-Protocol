@@ -918,8 +918,8 @@ class LLMClient:
         }
         try:
             if stream:
-                return requests.post(url, json=payload, headers=headers, stream=True)
-            resp = requests.post(url, json=payload, headers=headers)
+                return requests.post(url, json=payload, headers=headers, stream=True) if method == "POST" else requests.get(url, headers=headers, stream=True)
+            resp = requests.post(url, json=payload, headers=headers) if method == "POST" else requests.get(url, headers=headers)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
