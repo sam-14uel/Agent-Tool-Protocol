@@ -47,7 +47,7 @@ from atp_sdk.clients import ToolKitClient
 import requests
 
 client = ToolKitClient(
-    api_key="YOUR_ATP_API_KEY",
+    api_key="YOUR_ATP_TOOLKIT_API_KEY",
     app_name="my_app"
 )
 
@@ -74,14 +74,14 @@ client.start()
 ToolKitClient(
     api_key: str,
     app_name: str,
-    base_url: str = "https://chatatp-backend.onrender.com"
+    base_url: str = "https://api.chat-atp.com"
 )
 ```
 
 **Parameters:**
-- `api_key` (str): Your ATP API key.
+- `api_key` (str): Your ATP Toolkit API key.
 - `app_name` (str): Name of your application.
-- `base_url` (str, optional): ATP Server backend URL. Defaults to chatatp-backend.onrender.com.
+- `base_url` (str, optional): ATP Server backend URL. Defaults to api.chat-atp.com.
 
 ---
 
@@ -270,15 +270,15 @@ The `LLMClient` lets you connect to the ATP Agent Server, retrieve toolkit conte
 from atp_sdk.clients import LLMClient
 
 llm_client = LLMClient(
-    api_key="YOUR_ATP_API_KEY",
+    api_key="YOUR_ATP_LLM_CLIENT_API_KEY",
     protocol="ws",  # or "http"
-    base_url="https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/"
+    base_url="https://api.chat-atp.com/ws/v1/atp/llm-client/"
 )
 ```
 **Parameters:**
 - `api_key` (str): Your ATP API key.
 - `protocol` (str, optional): Protocol to use ("ws" or "http"). Defaults to "ws".
-- `base_url` (str, optional): ATP server URL. Defaults to `https://chatatp-backend.onrender.com/ws/v1/atp/llm-client/`.
+- `base_url` (str, optional): ATP server URL. Defaults to `https://api.chat-atp.com/ws/v1/atp/llm-client/`.
 
 ---
 
@@ -301,7 +301,7 @@ Executes a tool or workflow on the ATP server.
 ```python
 response = llm_client.call_tool(
     toolkit_id="your_toolkit_id",
-    json_response='{"function": "hello_world", "parameters": {"name": "Alice"}}',
+    tool_calls='{"function": "hello_world", "parameters": {"name": "Alice"}}',
     provider="openai",  # or "anthropic" or "mistralai"
     user_prompt="Say hello to Alice."
 )
@@ -309,7 +309,7 @@ print(response)
 ```
 **Arguments:**
 - `toolkit_id`: Unique ID of the toolkit.
-- `json_response`: JSON payload from an LLM containing the tool call.
+- `tool_calls`: JSON payload from an LLM containing the tool call.
 - `provider`: The LLM provider (e.g., "openai", "anthropic", "mistralai").
 - `user_prompt`: Additional user input to include in the execution.
 
@@ -328,7 +328,7 @@ The ATP SDK supports secure OAuth2 flows for tools that require third-party auth
 ```python
 from atp_sdk.clients import LLMClient
 
-llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
+llm_client = LLMClient(api_key="YOUR_ATP_LLM_CLIENT_API_KEY")
 
 # Step 1: Initiate OAuth connection
 connection = llm_client.initiate_oauth_connection(
@@ -453,7 +453,7 @@ import openai
 from atp_sdk.clients import LLMClient
 
 openai_client = openai.OpenAI(api_key="YOUR_OPENAI_API_KEY")
-llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
+llm_client = LLMClient(api_key="YOUR_ATP_LLM_CLIENT_API_KEY")
 
 # Get toolkit context
 context = llm_client.get_toolkit_context(
@@ -476,16 +476,12 @@ response = openai_client.chat.completions.create(
 # Extract tool calls
 tool_calls = response.choices[0].message.tool_calls
 
-# Loop through tool calls and execute each one
-for tool_call in tool_calls:
-    tool_call_json = {
-        "function": tool_call.function.name,
-        "parameters": tool_call.function.arguments
-    }
+
+if tool_calls:
 
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=tool_call_json,
+        tool_calls=tool_calls,
         provider="openai",
         user_prompt="Create a company and then list contacts."
     )
@@ -501,7 +497,7 @@ import anthropic
 from atp_sdk.clients import LLMClient
 
 anthropic_client = anthropic.Anthropic(api_key="YOUR_ANTHROPIC_API_KEY")
-llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
+llm_client = LLMClient(api_key="YOUR_ATP_LLM_CLIENT_API_KEY")
 
 # Get toolkit context
 context = llm_client.get_toolkit_context(
@@ -532,7 +528,7 @@ for tool_call in tool_calls:
 
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=tool_call_json,
+        tool_calls=tool_call_json,
         provider="anthropic",
         user_prompt="Create a company and then list contacts."
     )
@@ -548,7 +544,7 @@ from mistralai.client import MistralClient
 from atp_sdk.clients import LLMClient
 
 mistral_client = MistralClient(api_key="YOUR_MISTRAL_API_KEY")
-llm_client = LLMClient(api_key="YOUR_ATP_API_KEY")
+llm_client = LLMClient(api_key="YOUR_ATP_LLM_CLIENT_API_KEY")
 
 # Get toolkit context
 context = llm_client.get_toolkit_context(
@@ -568,15 +564,11 @@ response = mistral_client.chat(
 tool_calls = response.choices[0].message.tool_calls
 
 # Loop through tool calls and execute each one
-for tool_call in tool_calls:
-    tool_call_json = {
-        "function": tool_call.function.name,
-        "parameters": tool_call.function.arguments
-    }
+if tool_calls:
 
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=tool_call_json,
+        tool_calls=tool_calls,
         provider="mistralai",
         user_prompt="Create a company and then list contacts."
     )
@@ -592,14 +584,10 @@ When the LLM generates multiple tool calls, loop through them and execute each o
 ```python
 # Loop through tool calls and execute each one
 for tool_call in tool_calls:
-    tool_call_json = {
-        "function": tool_call.function.name,
-        "parameters": tool_call.function.arguments
-    }
 
     result = llm_client.call_tool(
         toolkit_id="your_toolkit_id",
-        json_response=tool_call_json,
+        tool_calls=[tool_call],
         provider="openai",  # or "anthropic" or "mistralai"
         user_prompt="Create a company and then list contacts."
     )
@@ -768,7 +756,7 @@ from flask_atp.registry import register_client  # For Flask
 
 # Initialize the client
 client = ToolKitClient(
-    api_key="YOUR_ATP_API_KEY",
+    api_key="YOUR_ATP_API_TOOLKIT_KEY",
     app_name="<your_toolkit_name>"
 )
 

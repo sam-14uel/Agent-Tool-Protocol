@@ -93,7 +93,7 @@ class ToolKitClient:
         self,
         api_key,
         app_name,
-        base_url="https://chatatp-backend.onrender.com",
+        base_url="https://api.chat-atp.com",
         endpoint_url=None,
         auto_restart=True,
         protocol="http",
@@ -770,7 +770,7 @@ class LLMClient:
         self,
         api_key: str,
         protocol: str = "https",
-        base_url: str = "https://chatatp-backend.onrender.com",
+        base_url: str = "https://api.chat-atp.com",
         idle_timeout: int = 300,
     ):
         """
@@ -780,7 +780,7 @@ class LLMClient:
             api_key (str): ATP API key for authentication.
             protocol (str): Connection protocol. Options: "ws", "wss", "http", "https".
                           Defaults to "https".
-            base_url (str): Server URL. Defaults to "https://chatatp-backend.onrender.com".
+            base_url (str): Server URL. Defaults to "https://api.chat-atp.com".
             idle_timeout (int): Idle timeout in seconds. Defaults to 300.
         """
         self.api_key = api_key
@@ -1164,18 +1164,14 @@ class LLMClient:
     ) -> list:
         """
         Execute tool calls from LLM providers on the server.
-
         Args:
-            toolkit_id (str): Unique ID of the toolkit instance.
+            toolkit_id (str): Unique ID/name of the toolkit.
             tool_calls (list): List of raw tool call objects from LLM response.
-            provider (str): LLM provider ("openai", "anthropic", "mistralai", "mistral").
-            auth_token (str, optional): Authentication token for the request.
-            user_prompt (str, optional): Additional user input.
-            timeout (int, optional): Timeout in seconds. Default is 120.
-            sequential (bool, optional): Execute tool calls sequentially if True. Default is False.
-
-        Returns:
-            list: List of tool execution results with tool_call_id and result.
+            provider (str): The LLM provider. Options: "openai", "anthropic", "mistralai", "mistral".
+            auth_token (str, optional): Authentication token. Defaults to None\n\nIt could be the user's API key or an access token for Toolkit Tool Execution.
+            user_prompt (str, optional): Original user prompt. Defaults to None.
+            timeout (int): Maximum time to wait for tool execution in seconds. Defaults to 120.
+            sequential (bool): Whether to execute tool calls sequentially. Defaults to False.
         """
         if not tool_calls:
             logger.warning("No tool calls provided")
@@ -1184,13 +1180,14 @@ class LLMClient:
         # Format tool calls for the backend
         formatted_calls = self._format_tool_calls(tool_calls, provider)
 
+        # Execute
         if sequential:
-            return self._call_tool_sequential(
+            tool_results = self._call_tool_sequential(
                 toolkit_id, formatted_calls, provider, auth_token, user_prompt, timeout
             )
         else:
             if self.protocol in ["ws", "wss"]:
-                return self._call_tool_ws(
+                tool_results = self._call_tool_ws(
                     toolkit_id,
                     formatted_calls,
                     provider,
@@ -1199,7 +1196,7 @@ class LLMClient:
                     timeout,
                 )
             elif self.protocol in ["http", "https"]:
-                return self._call_tool_http(
+                tool_results = self._call_tool_http(
                     toolkit_id,
                     formatted_calls,
                     provider,
@@ -1207,6 +1204,55 @@ class LLMClient:
                     user_prompt,
                     timeout,
                 )
+            else:
+                raise ValueError(f"Unsupported protocol: {self.protocol}")
+
+        # ✅ Standardize results for re-injection
+        formatted_responses = []
+
+        for result in tool_results:
+            # Extract clean fields
+            tool_call_id = result.get("tool_call_id")
+            result_data = result.get("result", {}) or {}
+            tool_info = result_data.get("tool", {}) if isinstance(result_data, dict) else {}
+
+            tool_name = tool_info.get("name")
+            tool_result = tool_info.get("result", {})  # ✅ only the actual tool result
+
+            # Convert to JSON string
+            formatted_output = json.dumps(tool_result, ensure_ascii=False)
+
+            # Provider-specific formats
+            if provider.lower() == "openai":
+                formatted_responses.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": formatted_output
+                })
+
+            elif provider.lower() == "anthropic":
+                formatted_responses.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": formatted_output
+                    }]
+                })
+
+            elif provider.lower() in ["mistral", "mistralai"]:
+                formatted_responses.append({
+                    "role": "tool",
+                    "name": tool_name,
+                    "content": formatted_output,
+                    "tool_call_id": tool_call_id
+                    
+                })
+
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+        return formatted_responses
 
     def _format_tool_calls(self, tool_calls: list, provider: str) -> list:
         """
@@ -1214,81 +1260,114 @@ class LLMClient:
 
         Args:
             tool_calls (list): Raw tool calls from LLM provider.
-            provider (str): Provider name.
+            provider (str): Provider name ("openai", "anthropic", "mistralai", "mistral").
 
         Returns:
-            list: Formatted tool calls in backend-required format.
+            list: Formatted tool calls in backend-required format:
+                [{"function": str, "parameters": dict, "auth_token": None, "tool_call_id": str}, ...]
         """
         formatted_calls = []
+        provider = provider.lower()
 
-        for tool_call in tool_calls:
+        if not tool_calls:
+            logger.warning("No tool calls provided for formatting")
+            return formatted_calls
+
+        for idx, tool_call in enumerate(tool_calls):
             try:
+                call_id = None
+                function_name = None
+                arguments = {}
+
                 if provider == "openai":
-                    # OpenAI: {id, type, function: {name, arguments}}
-                    call_id = tool_call.id if hasattr(tool_call, "id") else f"call_{str(uuid.uuid4())}"
-                    function_name = (
-                        tool_call.function.name
-                        if hasattr(tool_call, "function")
-                        else tool_call.get("function", {}).get("name", "")
-                    )
-                    arguments = (
-                        json.loads(tool_call.function.arguments)
-                        if hasattr(tool_call, "function") and isinstance(tool_call.function.arguments, str)
-                        else tool_call.function.arguments
-                        if hasattr(tool_call, "function")
-                        else tool_call.get("function", {}).get("arguments", {})
-                    )
+                    # Each item may be a pydantic model
+                    data = tool_call.model_dump() if hasattr(tool_call, "model_dump") else tool_call
+                    function_call = data.get("function_call") or data
+
+                    call_id = function_call.get("call_id") or f"call_{uuid.uuid4()}"
+                    function_name = function_call.get("name", "")
+                    raw_args = function_call.get("arguments", {})
+
+                    if isinstance(raw_args, str):
+                        try:
+                            arguments = json.loads(raw_args)
+                        except json.JSONDecodeError:
+                            logger.error(f"Invalid JSON args for OpenAI call {call_id}")
+                            arguments = {}
+                    elif isinstance(raw_args, dict):
+                        arguments = raw_args
 
                 elif provider == "anthropic":
-                    # Anthropic: {id, type, name, input}
-                    call_id = tool_call.id if hasattr(tool_call, "id") else tool_call.get("id", f"call_{str(uuid.uuid4())}")
-                    function_name = (
-                        tool_call.name
-                        if hasattr(tool_call, "name")
-                        else tool_call.get("name", "")
-                    )
-                    arguments = (
-                        tool_call.input
-                        if hasattr(tool_call, "input")
-                        else tool_call.get("input", {})
-                    )
+                    # Anthropic: content = [{type="tool_use", id, name, input}]
+                    call_id = getattr(tool_call, "id", None) or tool_call.get("id", f"call_{uuid.uuid4()}")
+                    function_name = getattr(tool_call, "name", None) or tool_call.get("name", "")
+                    arguments = getattr(tool_call, "input", {}) or tool_call.get("input", {})
+                    if not isinstance(arguments, dict):
+                        logger.warning(f"Invalid Anthropic input format at index {idx}: {arguments}")
+                        arguments = {}
 
                 elif provider in ["mistralai", "mistral"]:
-                    # Mistral: {id, type, function: {name, arguments}}
-                    call_id = tool_call.id if hasattr(tool_call, "id") else tool_call.get("id", f"call_{str(uuid.uuid4())}")
-                    function_name = (
-                        tool_call.function.name
-                        if hasattr(tool_call, "function")
-                        else tool_call.get("name", "")
-                    )
-                    arguments = (
-                        json.loads(tool_call.function.arguments)
-                        if hasattr(tool_call, "function") and isinstance(tool_call.function.arguments, str)
-                        else tool_call.function.arguments
-                        if hasattr(tool_call, "function")
-                        else tool_call.get("arguments", {})
-                    )
+                    # Mistral: tool_calls = [{id, type="function", function: {name, arguments}}]
+                    call_id = getattr(tool_call, "id", None) or tool_call.get("id", f"call_{uuid.uuid4()}")
+                    if hasattr(tool_call, "function"):
+                        function_name = getattr(tool_call.function, "name", None) or tool_call.get("function", {}).get("name", "")
+                        raw_args = getattr(tool_call.function, "arguments", {})
+                    else:
+                        function_name = tool_call.get("name", "") or tool_call.get("function", {}).get("name", "")
+                        raw_args = tool_call.get("arguments", {}) or tool_call.get("function", {}).get("arguments", {})
+                    
+                    # Handle arguments (string or dict)
+                    if isinstance(raw_args, str):
+                        try:
+                            arguments = json.loads(raw_args)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse Mistral tool call arguments at index {idx}: {e}")
+                            arguments = {}
+                    elif isinstance(raw_args, dict):
+                        arguments = raw_args
+                    else:
+                        logger.warning(f"Invalid Mistral arguments format at index {idx}: {raw_args}")
+                        arguments = {}
 
                 else:
                     raise ValueError(f"Unsupported provider: {provider}")
 
+                # Validate required fields
+                if not function_name:
+                    logger.error(f"Missing function name in tool call at index {idx}")
+                    formatted_calls.append({
+                        "function": "unknown",
+                        "parameters": {},
+                        "auth_token": None,
+                        "tool_call_id": call_id,
+                        "error": "Missing function name"
+                    })
+                    continue
+
+                if not call_id:
+                    call_id = f"call_{uuid.uuid4()}"
+                    logger.warning(f"Generated missing call_id for tool call at index {idx}: {call_id}")
+
                 # Ensure arguments is a dict
                 if not isinstance(arguments, dict):
-                    logger.warning(f"Invalid arguments format for tool call {call_id}: {arguments}")
+                    logger.warning(f"Arguments not a dict at index {idx}: {arguments}")
                     arguments = {}
 
                 formatted_calls.append({
                     "function": function_name,
                     "parameters": arguments,
-                    "auth_token": None  # Set in _call_tool methods if provided
+                    "auth_token": None,
+                    "tool_call_id": call_id
                 })
+                logger.debug(f"Formatted tool call {call_id}: function={function_name}, parameters={arguments}")
 
             except Exception as e:
-                logger.error(f"Error formatting tool call: {e}")
+                logger.error(f"Error formatting tool call at index {idx}: {e}")
                 formatted_calls.append({
                     "function": "unknown",
                     "parameters": {},
                     "auth_token": None,
+                    "tool_call_id": f"call_{uuid.uuid4()}",
                     "error": str(e)
                 })
 
@@ -1323,14 +1402,14 @@ class LLMClient:
                     logger.info(f"Tool call {i+1} completed successfully")
                 else:
                     results.append({
-                        "tool_call_id": f"call_{i}",
+                        "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                         "result": {"error": "No result returned"}
                     })
 
             except Exception as e:
                 logger.error(f"Error executing tool call {i+1}: {e}")
                 results.append({
-                    "tool_call_id": f"call_{i}",
+                    "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                     "result": {"error": str(e)}
                 })
 
@@ -1363,7 +1442,8 @@ class LLMClient:
                 "payload": {
                     "function": tool_call["function"],
                     "parameters": tool_call["parameters"],
-                    "auth_token": tool_call.get("auth_token") or auth_token
+                    "auth_token": tool_call.get("auth_token") or auth_token,
+                    "tool_call_id": tool_call["tool_call_id"]  # Use formatted tool_call_id
                 }
             }
 
@@ -1387,12 +1467,12 @@ class LLMClient:
             if response.get("status") == "error":
                 logger.error(f"Task response error: {response.get('message')}")
                 results.append({
-                    "tool_call_id": f"call_{i}",
+                    "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                     "result": {"error": response.get("message", "Unknown error")}
                 })
             else:
                 results.append({
-                    "tool_call_id": f"call_{i}",
+                    "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                     "result": response.get("result", "")
                 })
 
@@ -1421,7 +1501,8 @@ class LLMClient:
                 "payload": {
                     "function": tool_call["function"],
                     "parameters": tool_call["parameters"],
-                    "auth_token": tool_call.get("auth_token") or auth_token
+                    "auth_token": tool_call.get("auth_token") or auth_token,
+                    "tool_call_id": tool_call["tool_call_id"]  # Use formatted tool_call_id
                 }
             }
 
@@ -1430,18 +1511,18 @@ class LLMClient:
                 if response.get("status") == "error":
                     logger.error(f"Task response error: {response.get('message')}")
                     results.append({
-                        "tool_call_id": f"call_{i}",
+                        "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                         "result": {"error": response.get("message", "Unknown error")}
                     })
                 else:
                     results.append({
-                        "tool_call_id": f"call_{i}",
+                        "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                         "result": response.get("result", "")
                     })
             except Exception as e:
                 logger.error(f"Error executing tool call {i+1}: {e}")
                 results.append({
-                    "tool_call_id": f"call_{i}",
+                    "tool_call_id": tool_call["tool_call_id"],  # Use formatted tool_call_id
                     "result": {"error": str(e)}
                 })
 
@@ -1489,7 +1570,8 @@ class LLMClient:
             "payload": {
                 "function": tool_call["function"],
                 "parameters": tool_call["parameters"],
-                "auth_token": tool_call.get("auth_token") or auth_token
+                "auth_token": tool_call.get("auth_token") or auth_token,
+                "tool_call_id": tool_call["tool_call_id"]  # Use formatted tool_call_id
             }
         }
 
@@ -1514,3 +1596,88 @@ class LLMClient:
         except requests.RequestException as e:
             logger.error(f"Streaming request failed: {e}")
             raise
+
+
+    # Toolkits
+    # list toolkits with pagination
+    def list_store_toolkits(self, page: int = 1, page_size: int = 10) -> Dict:
+        """
+        List available public toolkits with pagination.
+
+        Args:
+            page (int): Page number to retrieve. Default is 1.
+            page_size (int): Number of toolkits per page. Default is 10.
+
+        Returns:
+            dict: Paginated list of toolkits with metadata.
+        """
+        endpoint = "store/toolkits/list/"
+        params = {"page": page, "page_size": page_size}
+        try:
+            response = self._http_request(endpoint, params, method="GET")
+            return response
+        except requests.RequestException as e:
+            logger.error(f"Failed to list toolkits: {e}")
+            raise Exception(f"Failed to list toolkits: {e}")
+        
+
+
+    # list developers toolkits with pagination
+    def list_my_toolkits(self, page: int = 1, page_size: int = 10) -> Dict:
+        """
+        List developer's toolkits with pagination.
+
+        Args:
+            page (int): Page number to retrieve. Default is 1.
+            page_size (int): Number of toolkits per page. Default is 10.
+
+        Returns:
+            dict: Paginated list of developer's toolkits with metadata.
+        """
+        endpoint = "developers/toolkits/"
+        params = {"page": page, "page_size": page_size}
+        try:
+            response = self._http_request(endpoint, params, method="GET")
+            return response
+        except requests.RequestException as e:
+            logger.error(f"Failed to list developer toolkits: {e}")
+            raise Exception(f"Failed to list developer toolkits: {e}")
+
+
+    def get_toolkit_details(self, toolkit_id: str) -> Dict:
+        """
+        Retrieve details of a specific toolkit.
+
+        Args:
+            toolkit_id (str): Unique ID of the toolkit.
+
+        Returns:
+            dict: Toolkit details including name, description, tools, and metadata.
+        """
+        endpoint = f"store/toolkits/{toolkit_id}/"
+        try:
+            response = self._http_request(endpoint, {}, method="GET")
+            return response
+        except requests.RequestException as e:
+            logger.error(f"Failed to get toolkit details: {e}")
+            raise Exception(f"Failed to get toolkit details: {e}")
+
+        
+    # get developer profile by display name
+    def get_developer_profile(self, display_name: str) -> Dict:
+        """
+        Retrieve developer profile by display name.
+
+        Args:
+            display_name (str): Display name of the developer.
+
+        Returns:
+            dict: Developer profile details including name, bio, and toolkits.
+        """
+        endpoint = f"store/developers/{display_name}/"
+        try:
+            response = self._http_request(endpoint, {}, method="GET")
+            return response
+        except requests.RequestException as e:
+            logger.error(f"Failed to get developer profile: {e}")
+            raise Exception(f"Failed to get developer profile: {e}")
