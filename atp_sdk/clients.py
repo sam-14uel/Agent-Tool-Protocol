@@ -120,6 +120,8 @@ class ToolKitClient:
         self.endpoint_url = endpoint_url  # <-- Add this
         self.registered_tools = {}
         self.exchange_tokens = {}
+        self.toolkit_hash = None # <--- Initialize this
+        self.active_app_sessions = {} # {request_id: session_data}
         self.lock = threading.Lock()
         self.ws = None
         self.ws_thread = None
@@ -179,15 +181,20 @@ class ToolKitClient:
 
     def _re_register_tools(self):
         """Re-register all tools after code changes."""
-        logger.info("Re-registering tools after code change...")
 
-        # Clear existing exchange tokens
-        with self.lock:
-            self.exchange_tokens.clear()
+        # 🌟 NEW: Compute the combined hash before verification
+        self.toolkit_hash = self._compute_toolkit_hash()
 
-        # Re-register each tool
-        for function_name in list(self.registered_tools.keys()):
-            self._register_with_server(function_name)
+        if self._verify_toolkit_hash():
+            return  # No need to re-register, toolkit is identical
+        else:
+            logger.info("Re-registering tools after code change...")
+            # Clear existing exchange tokens
+            with self.lock:
+                self.exchange_tokens.clear()
+            # Re-register each tool
+            for function_name in list(self.registered_tools.keys()):
+                self._register_with_server(function_name, self.toolkit_hash)
 
         logger.info(f"Re-registered {len(self.registered_tools)} tools")
 
@@ -219,12 +226,12 @@ class ToolKitClient:
 
         def decorator(func):
             # Ensure 'access_token' is NOT in user function signature
-            # sig = inspect.signature(func)
-            # if "access_token" in sig.parameters:
-            #     raise ValueError(
-            #         f"In tool '{function_name}': 'access_token' must not be declared in your function signature.\n"
-            #         "ChatATP handles this securely and automatically."
-            #     )
+            sig = inspect.signature(func)
+            if "access_token" in sig.parameters or "api_key" in sig.parameters:
+                raise ValueError(
+                    f"In tool '{function_name}': 'access_token' or 'api_key' must not be declared in your function signature.\n"
+                    "ChatATP handles this securely and automatically."
+                )
 
             # Get source code and hash it
             source_code = inspect.getsource(func)
@@ -244,13 +251,38 @@ class ToolKitClient:
                 "function_id": function_name,
             }
 
+            # 🌟 NEW: Compute the current overall hash
+            self.toolkit_hash = self._compute_toolkit_hash()
+
             # Register with server
-            self._register_with_server(function_name)
+            self._register_with_server(function_name, self.toolkit_hash)
             return func
 
         return decorator
+    
+    def _compute_toolkit_hash(self):
+        """Compute a single hash from all tool source codes."""
+        combined_code = ""
+        for fn, data in sorted(self.registered_tools.items()):
+            combined_code += data["source_code"]
+        return hashlib.sha256(combined_code.encode("utf-8")).hexdigest()
+    
 
-    def _register_with_server(self, function_name):
+    def _verify_toolkit_hash(self):
+        """Check with server if toolkit hash matches last registered version."""
+        url = f"{self.base_url}/api/v1/toolkit/verify_hash"
+        payload = {"api_key": self.api_key, "app_name": self.app_name, "toolkit_hash": self.toolkit_hash}
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            if resp.status_code == 200 and resp.json().get("up_to_date", False):
+                logger.info("✅ Toolkit hash matches server — skipping re-registration.")
+                return True
+            return False
+        except Exception as e:
+            logger.warning(f"Hash verification failed: {e}")
+            return False
+
+    def _register_with_server(self, function_name, toolkit_hash=None):
         """
         Register the tool with the backend server.
 
@@ -279,6 +311,7 @@ class ToolKitClient:
             "app_name": self.app_name,
             "programming_language": self.programming_language,
             "code_hash": code_hash,
+            "toolkit_hash": toolkit_hash, # <--- NEW
             "metadata": {
                 "params": tool_data["params"],
                 "required_params": tool_data["required_params"],
@@ -380,6 +413,8 @@ class ToolKitClient:
             message_type = data["message_type"]
             if message_type == "atp_client_connected":
                 logger.info(f"Server message: {data['payload']['message']}")
+
+            # --- START: Standard Tool Execution (Existing Logic) ---
             elif message_type == "atp_tool_request":
                 payload = data["payload"]
                 request_id = payload.get("request_id")
@@ -462,6 +497,99 @@ class ToolKitClient:
                         # self._report_execution(tool_name, error_result)
                 else:
                     logger.info(f"Unknown tool requested: {tool_name}")
+            # --- END: Standard Tool Execution ---
+            
+            # --- START: Interactive App Session (New Logic) ---
+            elif message_type == "atp_app_request":
+                # Message to start a new interactive app session
+                request_id = payload.get("request_id")
+                app_name = payload.get("tool_name")
+                initial_params = payload.get("params", {})
+                auth_token = payload.get("auth_token")
+
+                logger.info(f"Received APP START request for '{app_name}' (Session ID: {request_id})")
+
+                if app_name in self.registered_tools:
+                    app_func = self.registered_tools[app_name]["function"]
+                    
+                    # 1. Prepare initial call parameters
+                    call_params = initial_params.copy()
+                    if auth_token:
+                        call_params["auth_token"] = auth_token
+                    
+                    try:
+                        # 2. Call the app's entry function. 
+                        # It should return { 'ui_content': ..., 'app_state': ... }
+                        app_result = app_func(action="start", **call_params)
+                        
+                        # 3. Store the session state
+                        self.active_app_sessions[request_id] = {
+                            "tool_name": app_name,
+                            "function": app_func,
+                            "state": app_result.get('app_state', {}),
+                            "auth_token": auth_token,
+                        }
+                        
+                        # 4. Send the initial UI back to the server
+                        self._send_app_response(ws, request_id, app_result.get('ui_content', {}))
+                        
+                    except Exception as e:
+                        error_result = {"error": f"App initialization failed: {e}"}
+                        self._send_app_response(ws, request_id, error_result)
+                        logger.error(f"App '{app_name}' init error: {e}", exc_info=True)
+                else:
+                    logger.warning(f"Unknown app requested: {app_name}")
+
+            elif message_type == "atp_app_action":
+                # Message for user interaction within an active app session
+                request_id = payload.get("request_id")
+                action_data = payload.get("action_data") # User action details (e.g., button_id, form_data)
+
+                logger.info(f"Received APP ACTION for session ID: {request_id} with action: {action_data}")
+
+                if request_id in self.active_app_sessions:
+                    session = self.active_app_sessions[request_id]
+                    app_func = session["function"]
+                    current_state = session["state"]
+                    auth_token = session["auth_token"]
+                    
+                    try:
+                        # 1. Call the app function with the action and current state
+                        # It should return { 'ui_content': ..., 'app_state': ... }
+                        app_result = app_func(
+                            action="user_action", 
+                            action_data=action_data, 
+                            current_state=current_state,
+                            auth_token=auth_token # Pass token if the app function accepts it
+                        )
+                        
+                        # 2. Update the session state
+                        session["state"] = app_result.get('app_state', current_state)
+                        
+                        # 3. Send the updated UI back to the server
+                        self._send_app_response(ws, request_id, app_result.get('ui_content', {}))
+                        
+                        # Optional: If the app terminates itself, delete the session:
+                        if app_result.get('terminate', False):
+                            del self.active_app_sessions[request_id]
+                            logger.info(f"App session {request_id} terminated by app logic.")
+
+                    except Exception as e:
+                        error_result = {"error": f"App action processing failed: {e}"}
+                        self._send_app_response(ws, request_id, error_result)
+                        logger.error(f"App action error for {request_id}: {e}", exc_info=True)
+
+                else:
+                    logger.warning(f"Received action for unknown session ID: {request_id}")
+                    
+            elif message_type == "atp_app_terminate":
+                # Message from server to explicitly terminate a session
+                request_id = payload.get("request_id")
+                if request_id in self.active_app_sessions:
+                    del self.active_app_sessions[request_id]
+                    logger.info(f"App session {request_id} terminated by server request.")
+                
+            # --- END: Interactive App Session ---
 
             else:
                 logger.info(f"Unknown message type: {message_type}")
@@ -477,7 +605,104 @@ class ToolKitClient:
                 break
             time.sleep(10)  # Check every 10 seconds
 
-    import requests
+    def _send_app_response(self, ws, request_id, result):
+        """
+        Send the result of an app interaction (new UI state) back to the server via WebSocket.
+        """
+        response_payload = {
+            "type": "app_response", 
+            "request_id": request_id, 
+            "result": result
+        }
+        try:
+            ws.send(json.dumps(response_payload))
+            logger.info(f"App response sent for request_id: {request_id}")
+        except Exception as e:
+            logger.error(f"Failed to send app response for {request_id}: {e}")
+
+
+
+    def _handle_app_request_http(self, req):
+        """Handle the start of a new app session via HTTP polling."""
+        # This mirrors the 'atp_app_request' part of the revised on_message, 
+        # but uses the HTTP response method.
+        request_id = req.get("request_id")
+        app_name = req.get("tool_name")
+        initial_params = req.get("params", {})
+        auth_token = req.get("auth_token")
+
+        if app_name in self.registered_tools:
+            app_func = self.registered_tools[app_name]["function"]
+            call_params = initial_params.copy()
+            if auth_token:
+                call_params["auth_token"] = auth_token
+            
+            try:
+                # App logic call
+                app_result = app_func(action="start", **call_params)
+                
+                # Store state
+                self.active_app_sessions[request_id] = {
+                    "tool_name": app_name,
+                    "function": app_func,
+                    "state": app_result.get('app_state', {}),
+                    "auth_token": auth_token,
+                }
+                
+                # Use HTTP to send the initial UI response (app_response payload)
+                self._send_tool_result_inbox(request_id, app_result.get('ui_content', {}))
+                
+            except Exception as e:
+                error_result = {"error": f"App initialization failed: {e}"}
+                self._send_tool_result_inbox(request_id, error_result)
+                logger.error(f"HTTP App '{app_name}' init error: {e}", exc_info=True)
+
+
+    def _handle_app_action_http(self, req):
+        """Handle a user action within an active app session via HTTP polling."""
+        # This mirrors the 'atp_app_action' part of the revised on_message.
+        request_id = req.get("request_id")
+        action_data = req.get("action_data")
+
+        if request_id in self.active_app_sessions:
+            session = self.active_app_sessions[request_id]
+            app_func = session["function"]
+            current_state = session["state"]
+            auth_token = session["auth_token"]
+            
+            try:
+                # App logic call
+                app_result = app_func(
+                    action="user_action", 
+                    action_data=action_data, 
+                    current_state=current_state,
+                    auth_token=auth_token
+                )
+                
+                # Update state
+                session["state"] = app_result.get('app_state', current_state)
+                
+                # Use HTTP to send the updated UI response
+                self._send_tool_result_inbox(request_id, app_result.get('ui_content', {}))
+                
+                # Clean up if app terminates
+                if app_result.get('terminate', False):
+                    del self.active_app_sessions[request_id]
+                    logger.info(f"HTTP App session {request_id} terminated by app logic.")
+
+            except Exception as e:
+                error_result = {"error": f"App action processing failed: {e}"}
+                self._send_tool_result_inbox(request_id, error_result)
+                logger.error(f"HTTP App action error for {request_id}: {e}", exc_info=True)
+        else:
+            logger.warning(f"Received action for unknown HTTP session ID: {request_id}")
+
+    def _handle_app_terminate_http(self, req):
+        """Handle server-side termination of an app session."""
+        request_id = req.get("request_id")
+        if request_id in self.active_app_sessions:
+            del self.active_app_sessions[request_id]
+            logger.info(f"HTTP App session {request_id} terminated by server request.")
 
     def _send_tool_result_http(self, request_id, result):
         """
@@ -912,10 +1137,14 @@ class LLMClient:
         """Make an HTTP request to the server."""
         url = f"{self.http_url}{endpoint}"
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"ApiKey {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json" if not stream else "text/event-stream",
         }
+
+        # Add API key to payload
+        payload["api_key"] = self.api_key
+
         try:
             if stream:
                 return requests.post(url, json=payload, headers=headers, stream=True) if method == "POST" else requests.get(url, headers=headers, stream=True)
@@ -1094,6 +1323,7 @@ class LLMClient:
                 "request_id": request_id,
                 "provider": provider,
                 "user_prompt": user_prompt,
+                "api_key": self.api_key,
             }
         )
         try:
@@ -1439,6 +1669,7 @@ class LLMClient:
                 "toolkit_id": toolkit_id,
                 "auth_token": auth_token,
                 "user_prompt": user_prompt,
+                "api_key": self.api_key,
                 "payload": {
                     "function": tool_call["function"],
                     "parameters": tool_call["parameters"],
