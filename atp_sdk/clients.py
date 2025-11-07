@@ -254,6 +254,10 @@ class ToolKitClient:
             # 🌟 NEW: Compute the current overall hash
             self.toolkit_hash = self._compute_toolkit_hash()
 
+            if self._verify_toolkit_hash():
+                logger.info(f"Tool '{function_name}' registration skipped (Toolkit hash match).")
+                return func
+
             # Register with server
             self._register_with_server(function_name, self.toolkit_hash)
             return func
@@ -294,16 +298,18 @@ class ToolKitClient:
         source_code = tool_data["source_code"]
         code_hash = tool_data["code_hash"]
 
-        # Generate a sample response for registration
-        sample_params = self._generate_sample_params(tool_data["params"])
-        sig = inspect.signature(func)
-        if "auth_token" in sig.parameters:
-            sample_params["auth_token"] = "sample_token"
-        try:
-            response = func(**sample_params)
-        except Exception as e:
-            logger.warning(f"Sample invocation for '{function_name}' failed: {e}")
-            response = {"error": "Sample response unavailable"}
+        # # Generate a sample response for registration
+        # sample_params = self._generate_sample_params(tool_data["params"])
+        # sig = inspect.signature(func)
+        # if "auth_token" in sig.parameters:
+        #     sample_params["auth_token"] = "sample_token"
+        # try:
+        #     response = func(**sample_params)
+        # except Exception as e:
+        #     logger.warning(f"Sample invocation for '{function_name}' failed: {e}")
+        #     response = {"error": "Sample response unavailable"}
+
+        response = "" # New
 
         payload = {
             "function_id": function_name,

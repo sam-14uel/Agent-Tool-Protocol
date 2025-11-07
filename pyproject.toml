@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AgentToolProtocol"
-version = "0.2.2"  # Updated version
+version = "0.2.3"  # Updated version
 description = "A ChatATP Python SDK for registering, exposing, and serving your own Python functions as tools via the ATP platform. Supports secure OAuth2 flows, dynamic tool registration, and real-time tool invocation via WebSocket or HTTP."
 readme = "README.md"
 authors = [
@@ -76,7 +76,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["atp_sdk*", "atp_sdk.*", "atp_sdk", "django_atp*", "django_atp.*", "django_atp", "fastapi_atp*", "fastapi_atp.*", "fastapi_atp", "flask_atp*", "flask_atp.*", "flask_atp"]
+include = ["atp_sdk*", "atp_sdk.*", "atp_sdk", "django_atp*", "django_atp.*", "django_atp", "fastapi_atp*", "fastapi_atp.*", "fastapi_atp", "flask_atp*", "flask_atp.*", "flask_atp", "atp_ui*", "atp_ui.*", "atp_ui"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
