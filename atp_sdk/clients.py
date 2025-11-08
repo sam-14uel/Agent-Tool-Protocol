@@ -160,41 +160,17 @@ class ToolKitClient:
         )
 
     def _on_code_change(self, file_path: str):
-        """Handle code changes by restarting the toolkit client."""
-        logger.info(
-            f"Code change detected in {file_path}. Restarting toolkit client..."
-        )
-
-        # Stop current connection
-        self.stop()
-
-        # Wait a moment for cleanup
-        time.sleep(2)
-
-        # Re-register all tools
-        self._re_register_tools()
-
-        # Restart the client
-        self.start()
-
-        logger.info("Toolkit client restarted successfully after code change")
+        """Handle code changes by re-registering tools if needed."""
+        logger.info(f"Detected change in {file_path}")
+        if self.verify_and_register_tools():
+            logger.info("No changes in tool functionality detected.")
+        else:
+            logger.info("Tools re-registered successfully after code change.")
 
     def _re_register_tools(self):
         """Re-register all tools after code changes."""
-
-        # 🌟 NEW: Compute the combined hash before verification
-        self.toolkit_hash = self._compute_toolkit_hash()
-
-        if self._verify_toolkit_hash():
-            return  # No need to re-register, toolkit is identical
-        else:
-            logger.info("Re-registering tools after code change...")
-            # Clear existing exchange tokens
-            with self.lock:
-                self.exchange_tokens.clear()
-            # Re-register each tool
-            for function_name in list(self.registered_tools.keys()):
-                self._register_with_server(function_name, self.toolkit_hash)
+        logger.info("Re-registering tools after code change...")
+        self.verify_and_register_tools()
 
         logger.info(f"Re-registered {len(self.registered_tools)} tools")
 
@@ -839,10 +815,38 @@ class ToolKitClient:
                 logger.error(f"Inbox polling loop error: {e}", exc_info=True)
                 time.sleep(30)  # Wait 30 seconds after an error
 
+
+    def verify_and_register_tools(self):
+        """
+        Verify the toolkit hash with the server and register tools if needed.
+        Returns True if the toolkit is up-to-date, False otherwise.
+        """
+        if not self.registered_tools:
+            logger.info("No tools registered, skipping hash verification.")
+            return False
+            
+        # Compute the current toolkit hash
+        current_hash = self._compute_toolkit_hash()
+        self.toolkit_hash = current_hash
+        
+        # Verify with server
+        if self._verify_toolkit_hash():
+            logger.info("✅ Toolkit is up-to-date. No registration needed.")
+            return True
+        
+        logger.info("🔧 Toolkit has changed or is new. Registering tools...")
+        # Register all tools
+        for tool_name in list(self.registered_tools.keys()):
+            self._register_with_server(tool_name, self.toolkit_hash)
+        return False
+
     def start(self):
         """
-        Start the WebSocket client and listen for tool requests.
+        Start the Toolkit client and listen for tool requests.
         """
+        # Verify toolkit hash and register tools if needed
+        self.verify_and_register_tools()
+        
         # Start idle watcher thread
         idle_thread = threading.Thread(target=self._watch_idle, daemon=True)
         idle_thread.start()
@@ -853,7 +857,6 @@ class ToolKitClient:
             self.file_watcher.start()
 
         if self.protocol.startswith("http"):
-            # thread = threading.Thread(target=self._run_http_loop, daemon=True)
             thread = threading.Thread(target=self._poll_inbox_loop, daemon=True)
         else:
             thread = threading.Thread(target=self._run_ws_loop, daemon=True)
