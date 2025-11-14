@@ -824,21 +824,49 @@ class ToolKitClient:
         if not self.registered_tools:
             logger.info("No tools registered, skipping hash verification.")
             return False
-            
+
         # Compute the current toolkit hash
         current_hash = self._compute_toolkit_hash()
         self.toolkit_hash = current_hash
-        
-        # Verify with server
+
+        # Verify the toolkit hash with the server
         if self._verify_toolkit_hash():
             logger.info("✅ Toolkit is up-to-date. No registration needed.")
             return True
-        
-        logger.info("🔧 Toolkit has changed or is new. Registering tools...")
-        # Register all tools
+
+        logger.info("🔧 Toolkit hash mismatch. Verifying individual tools...")
+
+        # Verify and register individual tools
         for tool_name in list(self.registered_tools.keys()):
-            self._register_with_server(tool_name, self.toolkit_hash)
+            tool_data = self.registered_tools[tool_name]
+            if not self._verify_tool_hash(tool_data["code_hash"], tool_name):
+                logger.info(f"Tool '{tool_name}' hash mismatch. Registering...")
+                self._register_with_server(tool_name, self.toolkit_hash)
+            else:
+                logger.info(f"Tool '{tool_name}' is up-to-date. Skipping registration.")
+
         return False
+
+    def _verify_tool_hash(self, tool_hash: str, tool_name: str) -> bool:
+        """
+        Verify if a specific tool's hash matches the server's version.
+
+        Args:
+            tool_hash (str): The hash of the tool's source code.
+
+        Returns:
+            bool: True if the tool hash matches, False otherwise.
+        """
+        url = f"{self.base_url}/api/v1/toolkit/verify_tool_hash"
+        payload = {"api_key": self.api_key, "tool_hash": tool_hash, "tool_name": tool_name}
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            if resp.status_code == 200 and resp.json().get("up_to_date", False):
+                return True
+            return False
+        except Exception as e:
+            logger.warning(f"Tool hash verification failed: {e}")
+            return False
 
     def start(self):
         """
